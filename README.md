@@ -227,3 +227,9 @@ Layout: `internal/tunnel` is the egress interface (`internal/tunnel/myst`
 implements it), `internal/frontend` the listeners, `internal/gate` the kill
 switch, `internal/node` the managed-node fetcher and supervisor. Adding an
 egress kind or a frontend protocol touches nothing else.
+
+## Licence
+
+[GPL-3.0](LICENSE). The Mysterium node it drives is GPL-3.0 too, but is
+downloaded at runtime rather than bundled, so no node code lives in this
+repository.
