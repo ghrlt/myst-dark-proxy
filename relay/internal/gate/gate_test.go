@@ -89,3 +89,82 @@ func TestSessionCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("active count corrupted by double close: %d", got)
 	}
 }
+
+func TestArmedGateMakesCallersWaitUntilItOpens(t *testing.T) {
+	g := New(context.Background(), true)
+	g.Arm("no session: waiting for a client")
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		g.Open()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := g.WaitOpen(ctx); err != nil {
+		t.Fatalf("armed gate refused a caller instead of waiting for the session: %v", err)
+	}
+	if _, err := g.Enter(); err != nil {
+		t.Fatalf("gate opened but refused the caller it kept waiting: %v", err)
+	}
+}
+
+// A tunnel that has failed is not a tunnel that is coming: the honest answer is
+// an immediate refusal, not a minute of hope. This is what keeps the kill
+// switch's advertised reaction time true.
+func TestClosedGateRefusesWaitersImmediately(t *testing.T) {
+	g := New(context.Background(), true)
+	g.Close("tunnel down")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := g.WaitOpen(ctx)
+	if !IsClosed(err) {
+		t.Fatalf("closed gate did not refuse: %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("closed gate made a caller wait %s before refusing", time.Since(start))
+	}
+	if s := g.Stats(); s.Refused == 0 {
+		t.Fatal("a refused waiter was not counted")
+	}
+}
+
+// The first provider tried is often not the one that works. A waiter released
+// by that first failure would be refused moments before the retry that
+// succeeds - and it is the only client actually waiting for this session.
+func TestWaitingSurvivesAFailedAttempt(t *testing.T) {
+	g := New(context.Background(), true)
+	g.Arm("opening a session")
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		g.Close("connect failed")
+		time.Sleep(20 * time.Millisecond)
+		g.Arm("retrying")
+		time.Sleep(20 * time.Millisecond)
+		g.Open()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := g.WaitOpen(ctx); err != nil {
+		t.Fatalf("waiter was dropped by a failed attempt instead of waiting for the retry: %v", err)
+	}
+}
+
+func TestWaitOpenGivesUpWithoutAdmitting(t *testing.T) {
+	g := New(context.Background(), true)
+	g.Arm("no session")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := g.WaitOpen(ctx); !IsClosed(err) {
+		t.Fatalf("a waiter that ran out of patience must be refused, got %v", err)
+	}
+	if s := g.Stats(); s.Admitted != 0 {
+		t.Fatalf("waiting admitted %d stream(s) on its own", s.Admitted)
+	}
+}

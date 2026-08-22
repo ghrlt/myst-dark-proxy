@@ -159,10 +159,39 @@ Nothing gets through. New connections are refused on every port - SOCKS5 answers
 that were already open are torn down. There is no code path in the relay that
 dials the internet directly, so there is nothing to fall back to.
 
-The relay picks a new exit and reconnects on its own, and only reports itself
-healthy once it has completed a real request through the new one.
+The relay picks a new exit and reconnects on its own - straight away if
+something is still using it, otherwise the next time something connects - and
+only reports itself healthy once it has completed a real request through the
+new one.
 
-## 7. Troubleshooting
+## 7. It holds a session only while you are using it
+
+Exit providers charge by the hour as well as by the gigabyte, so a session
+nobody is using still spends your balance. The relay therefore opens one when
+something first connects to a proxy port, and closes it again after 15 minutes
+with nothing carried. Started at sign-in and first used at noon, it is billed
+from noon.
+
+Two things follow from that. The first page load after a break takes about
+twelve seconds while a session is built - everything after it is as fast as the
+exit allows. And `mystrelay.exe status` says `idle` most of the time, which is
+the resting state, not a fault:
+
+```
+myst-relay  - idle: no session, the next client opens one
+
+  tunnel       idle
+  sessions     on demand, closed after 15m0s idle; 3 opened, nothing carried for 6m2s
+```
+
+To keep one session open permanently instead, put this in `config.env`:
+
+```
+RELAY_ON_DEMAND=false
+RELAY_SESSION_IDLE_TIMEOUT=0
+```
+
+## 8. Troubleshooting
 
 **Nothing loads and `status` says the relay is not running** - check
 `%LOCALAPPDATA%\myst-relay\logs\relay.log`. Run `mystrelay.exe run` in a
@@ -177,13 +206,19 @@ automatically; if something else holds the port, close it or set
 Mysterium app first. This service uses an identity, it does not create one.
 
 **Everything is refused and the log says "kill switch closed"** - that is the
-kill switch working; the tunnel is down. The reason is on the same line.
+kill switch working; the tunnel is down. The reason is on the same line. "Kill
+switch armed" is different: there is simply no session yet, and the next
+connection opens one.
+
+**The first page after a pause takes ten seconds or so** - that is a session
+being opened for it; see section 7. Raise `RELAY_SESSION_IDLE_TIMEOUT` if the
+pauses in your day are longer than the timeout, or turn the behaviour off.
 
 **It picked a slow country** - set `EXIT_COUNTRY=NL,DE` (or whatever you prefer)
 in `config.env` and restart. `EXIT_IP_TYPE=residential` also helps against sites
 that block hosting ranges.
 
-## 8. Uninstall
+## 9. Uninstall
 
 ```
 mystrelay.exe autostart remove

@@ -5,6 +5,11 @@
 // Every one of those ports is fail-closed - while the tunnel is not up, clients
 // are refused, never quietly served over the host's own connection.
 //
+// The session follows the clients rather than the relay's own uptime: providers
+// charge by the hour as well as by the gibibyte, so by default none is opened
+// until a client asks for egress, and one that has carried nothing for the idle
+// timeout is closed again.
+//
 // Two deployment shapes share this binary. Under Docker the node runs as its
 // own container and the relay attaches to it. On a desktop the relay downloads
 // and supervises the node itself, so one executable is the whole service.
@@ -26,6 +31,7 @@ import (
 	"time"
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/config"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/frontend"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/frontend/httpproxy"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/frontend/raw"
@@ -142,7 +148,8 @@ func run(cfg *config.Config) error {
 		"version", version,
 		"identity", cfg.IdentityAddress,
 		"managed_node", cfg.Managed,
-		"kill_switch", killSwitchMode(cfg.StrictKillSwitch))
+		"kill_switch", killSwitchMode(cfg.StrictKillSwitch),
+		"sessions", sessionPolicy(cfg))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -199,6 +206,15 @@ func run(cfg *config.Config) error {
 		return err
 	}
 
+	// A session costs by the hour as well as by the byte, so unless it is
+	// configured to stay up regardless, the tracker is what ties its lifetime
+	// to actual clients: the frontends announce demand, the supervisor opens
+	// and closes sessions to match.
+	var wants *demand.Tracker
+	if cfg.SessionsFollowClients() {
+		wants = demand.New()
+	}
+
 	egress := myst.New(myst.Options{
 		Client:         api,
 		Identity:       cfg.IdentityAddress,
@@ -214,6 +230,9 @@ func run(cfg *config.Config) error {
 		ReconnectMin:   cfg.ReconnectMin,
 		ReconnectMax:   cfg.ReconnectMax,
 		RotateEvery:    cfg.RotateEvery,
+		Demand:         wants,
+		OnDemand:       cfg.OnDemand,
+		SessionIdle:    cfg.SessionIdle,
 		Logger:         log,
 	})
 
@@ -226,6 +245,8 @@ func run(cfg *config.Config) error {
 		Log:         log,
 		DialTimeout: cfg.DialTimeout,
 		IdleTimeout: cfg.IdleTimeout,
+		Demand:      wants,
+		ReadyWait:   cfg.ReadyTimeout,
 	}
 
 	var frontends []frontend.Frontend
@@ -255,7 +276,7 @@ func run(cfg *config.Config) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		driveKillSwitch(runCtx, egress, killSwitch, log)
+		driveKillSwitch(runCtx, egress, killSwitch, wants != nil, log)
 	}()
 
 	wg.Add(1)
@@ -274,12 +295,15 @@ func run(cfg *config.Config) error {
 
 	if cfg.HealthListen != "" {
 		hs := &health.Server{
-			Listen:    cfg.HealthListen,
-			Tunnel:    egress,
-			Gate:      killSwitch,
-			Endpoints: endpoints,
-			Log:       log,
-			Started:   time.Now(),
+			Listen:      cfg.HealthListen,
+			Tunnel:      egress,
+			Gate:        killSwitch,
+			Demand:      wants,
+			OnDemand:    cfg.OnDemand,
+			SessionIdle: cfg.SessionIdle,
+			Endpoints:   endpoints,
+			Log:         log,
+			Started:     time.Now(),
 		}
 		wg.Add(1)
 		go func() {
@@ -315,7 +339,14 @@ func seedKeystore(cfg *config.Config) error {
 }
 
 // driveKillSwitch mirrors tunnel state onto the gate.
-func driveKillSwitch(ctx context.Context, t tunnel.Tunnel, g *gate.Gate, log *slog.Logger) {
+//
+// onDemand changes what a shut gate means. With sessions tied to clients, "no
+// session" and "building one" are resting states, not faults: the gate is armed
+// instead of closed, so a client that arrives waits for the session its own
+// arrival started rather than being refused. Anything else - a failure, a node
+// that went away - still shuts the gate outright and refuses immediately, which
+// is what keeps a broken tunnel from looking like a slow one.
+func driveKillSwitch(ctx context.Context, t tunnel.Tunnel, g *gate.Gate, onDemand bool, log *slog.Logger) {
 	updates, cancel := t.Watch()
 	defer cancel()
 
@@ -336,6 +367,11 @@ func driveKillSwitch(ctx context.Context, t tunnel.Tunnel, g *gate.Gate, log *sl
 			reason := string(st.State)
 			if st.Detail != "" {
 				reason += ": " + st.Detail
+			}
+			if onDemand && (st.State == tunnel.StateIdle || st.State == tunnel.StateConnecting) {
+				g.Arm(reason)
+				log.Info("kill switch armed", "reason", reason)
+				continue
 			}
 			g.Close(reason)
 			log.Warn("kill switch closed", "reason", reason)
@@ -367,6 +403,19 @@ func selfCheck() int {
 		return 1
 	}
 	return 0
+}
+
+// sessionPolicy describes the session lifecycle in one line, for the log.
+func sessionPolicy(cfg *config.Config) string {
+	switch {
+	case cfg.OnDemand && cfg.SessionIdle > 0:
+		return "opened when a client asks, closed after " + cfg.SessionIdle.String() + " idle"
+	case cfg.OnDemand:
+		return "opened when a client asks, then kept open"
+	case cfg.SessionIdle > 0:
+		return "opened at startup, closed after " + cfg.SessionIdle.String() + " idle"
+	}
+	return "opened at startup and kept open"
 }
 
 func killSwitchMode(strict bool) string {

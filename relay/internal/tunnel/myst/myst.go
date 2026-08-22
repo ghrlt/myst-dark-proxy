@@ -15,6 +15,11 @@
 //     "NotConnected".
 //   - /connection/ip reports the node's own public address, not the session's,
 //     so the exit address is established by fetching through the tunnel.
+//
+// A session is also a running cost: the provider charges per hour as well as
+// per gibibyte, so one nobody is using is money spent carrying nothing. When a
+// demand tracker is supplied the supervisor therefore opens a session only
+// once a client asks for egress, and closes it again after the idle timeout.
 package myst
 
 import (
@@ -30,9 +35,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/config"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tequilapi"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/upstream"
@@ -66,6 +73,18 @@ type Options struct {
 	ReconnectMax   time.Duration
 	RotateEvery    time.Duration
 
+	// Demand is how the frontends say a client wants egress now, and how the
+	// supervisor learns that nothing is using the session any more. Leaving it
+	// nil pins the tunnel up for as long as the relay runs, whatever the two
+	// settings below say.
+	Demand *demand.Tracker
+	// OnDemand delays the first session until a client asks for one, so a relay
+	// that is started at boot and used at noon is billed from noon.
+	OnDemand bool
+	// SessionIdle closes a session that has carried nothing for this long. 0
+	// keeps it open until it fails or the relay stops.
+	SessionIdle time.Duration
+
 	Logger *slog.Logger
 }
 
@@ -74,6 +93,10 @@ type Tunnel struct {
 	opt Options
 	log *slog.Logger
 	bc  *tunnel.Broadcaster
+
+	// sessions counts how many have been opened, which is what says whether an
+	// idle timeout is saving money or merely churning through providers.
+	sessions atomic.Uint64
 
 	// suspect carries a nudge from the data path to the supervisor: a stream
 	// that could not reach the node's proxy is the earliest evidence the
@@ -115,6 +138,9 @@ func (t *Tunnel) Status() tunnel.Status { return t.bc.Status() }
 
 // Watch subscribes to status changes.
 func (t *Tunnel) Watch() (<-chan tunnel.Status, func()) { return t.bc.Watch() }
+
+// Sessions is how many sessions have been opened since the relay started.
+func (t *Tunnel) Sessions() uint64 { return t.sessions.Load() }
 
 // dialer returns a proxy client for the currently discovered listener.
 func (t *Tunnel) dialer() *upstream.HTTPConnect {
@@ -165,19 +191,46 @@ func (t *Tunnel) Run(ctx context.Context) error {
 		return err
 	}
 
+	// A session the node kept from an earlier run is billed to this identity
+	// and belongs to nobody. Drop it before deciding whether to open one, so
+	// that "no session" really does mean "paying for nothing".
+	t.dropStaleSession(ctx)
+
 	backoff := t.opt.ReconnectMin
+	sleep := t.opt.OnDemand && t.opt.Demand != nil
+	var wake uint64
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+
+		if sleep {
+			t.setState(tunnel.StateIdle, "no client is asking for egress")
+			t.log.Info("no session: waiting for a client",
+				"idle_timeout", t.opt.SessionIdle, "sessions_so_far", t.sessions.Load())
+			if wake, err = t.opt.Demand.Wait(ctx, wake); err != nil {
+				return err
+			}
+			t.log.Info("a client asked for egress: opening a session")
+			sleep, backoff = false, t.opt.ReconnectMin
+		}
+
 		err := t.session(ctx)
+		var idle idleStop
 		switch {
 		case ctx.Err() != nil:
-			t.shutdownSession()
+			t.closeSession(tunnel.StateDown, "shutting down")
 			return ctx.Err()
+		case errors.As(err, &idle):
+			// Closed because nothing was using it; sleep until asked again.
+			sleep, wake = true, idle.seq
 		case err == nil:
-			// Session ended on request (rotation): reconnect immediately.
+			// Session ended on request (rotation): reconnect immediately,
+			// unless the point of reconnecting has expired with it.
 			backoff = t.opt.ReconnectMin
+			if _, seq, expired := t.idleExpired(); expired {
+				sleep, wake = true, seq
+			}
 		default:
 			t.setState(tunnel.StateFailed, err.Error())
 			t.log.Warn("session ended", "err", err, "retry_in", backoff)
@@ -187,7 +240,42 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			case <-time.After(backoff):
 			}
 			backoff = min(backoff*2, t.opt.ReconnectMax)
+			// Whoever this reconnect was for has stopped waiting. Retrying
+			// would buy a session for nobody, so go back to sleep instead.
+			if d, seq, expired := t.idleExpired(); expired {
+				t.log.Info("nothing is waiting for a tunnel: staying disconnected",
+					"idle_for", d.Truncate(time.Second))
+				sleep, wake = true, seq
+			}
 		}
+	}
+}
+
+// idleStop ends a session because nothing has used it for the idle timeout.
+// It carries the demand sequence read at that moment: the supervisor sleeps on
+// that sequence, so a client that arrives while the session is being torn down
+// wakes it instead of being slept through.
+type idleStop struct{ seq uint64 }
+
+func (idleStop) Error() string { return "session closed after the idle timeout" }
+
+// idleExpired reports whether the idle timeout has elapsed with nothing being
+// carried, and on which demand sequence that was decided.
+func (t *Tunnel) idleExpired() (time.Duration, uint64, bool) {
+	if t.opt.Demand == nil || t.opt.SessionIdle <= 0 {
+		return 0, 0, false
+	}
+	d, seq := t.opt.Demand.IdleFor()
+	return d, seq, d >= t.opt.SessionIdle
+}
+
+// dropStaleSession clears whatever the node may still be holding on our proxy
+// port, which is the only session this relay could be charged for.
+func (t *Tunnel) dropStaleSession(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := t.opt.Client.Disconnect(ctx, t.opt.ProxyPort); err != nil {
+		t.log.Debug("no session left over from a previous run", "err", err)
 	}
 }
 
@@ -323,11 +411,12 @@ func (t *Tunnel) session(ctx context.Context) error {
 	ip, err := t.proveEgress(ctx)
 	if err != nil {
 		t.penalise(prop.ProviderID, 30*time.Minute)
-		t.shutdownSession()
+		t.closeSession(tunnel.StateDown, "session closed")
 		return fmt.Errorf("provider %s established a session but cannot carry traffic: %w", prop.ProviderID, err)
 	}
 	status.ExitIP = ip
 	t.bc.Set(status)
+	t.sessions.Add(1)
 
 	t.log.Info("tunnel up",
 		"provider", prop.ProviderID,
@@ -358,13 +447,27 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 			return ctx.Err()
 		case <-rotate:
 			t.log.Info("rotating exit", "after", t.opt.RotateEvery)
-			t.setState(tunnel.StateConnecting, "rotating exit")
 			t.penalise(provider, t.opt.RotateEvery)
-			t.shutdownSession()
+			t.closeSession(tunnel.StateConnecting, "rotating exit")
 			return nil
 		case <-t.suspect:
 			// A stream just failed to reach the proxy; check now, not in 5s.
 		case <-ticker.C:
+		}
+
+		// Nothing has been carried for the idle timeout. From here the session
+		// is pure cost - it is billed by the hour whether or not it moves a
+		// byte - so close it and wait to be asked for another one.
+		//
+		// A client that arrives in the moment between this decision and the
+		// gate shutting has its stream torn down like any other kill-switch
+		// closure, which is the fail-closed direction; its arrival is already
+		// recorded, so the retry is answered by the session it started.
+		if d, seq, expired := t.idleExpired(); expired {
+			t.log.Info("session idle: closing it",
+				"idle_for", d.Truncate(time.Second), "timeout", t.opt.SessionIdle, "provider", provider)
+			t.closeSession(tunnel.StateIdle, "idle for "+d.Truncate(time.Second).String())
+			return idleStop{seq: seq}
 		}
 
 		// Cheapest and most decisive check first: the listener is local, so a
@@ -391,9 +494,11 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 	}
 }
 
-// shutdownSession asks the node to drop the session and marks the tunnel down.
-func (t *Tunnel) shutdownSession() {
-	t.setState(tunnel.StateDown, "session closed")
+// closeSession asks the node to drop the session and records why the relay is
+// no longer carrying traffic - down after a failure, idle when the session was
+// closed because nothing was using it.
+func (t *Tunnel) closeSession(state tunnel.State, detail string) {
+	t.setState(state, detail)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := t.opt.Client.Disconnect(ctx, t.opt.ProxyPort); err != nil {

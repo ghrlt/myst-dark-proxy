@@ -34,8 +34,9 @@ func cmdStatus(args []string) error {
 
 	t := rep.Tunnel
 	k := rep.KillSwitch
-	fmt.Printf("myst-relay  %s\n\n", tick(rep.Healthy))
+	fmt.Printf("myst-relay  %s\n\n", headline(rep))
 	fmt.Printf("  tunnel       %s\n", t.State)
+	fmt.Printf("  sessions     %s\n", sessionLine(rep))
 	if t.ProviderID != "" {
 		fmt.Printf("  exit         %s  %s %s\n", orDash(t.ExitIP), orDash(t.Country), orDash(t.IPType))
 		fmt.Printf("  provider     %s\n", t.ProviderID)
@@ -91,10 +92,15 @@ func cmdVerify(args []string) error {
 		fmt.Printf("\nStart it with \"%s run\" and try again.\n\n", exeName())
 		return fmt.Errorf("relay not running")
 	}
-	if rep.Healthy {
+	switch {
+	case rep.Healthy:
 		good("healthy, exit %s (%s, %s) via %s", orDash(rep.Tunnel.ExitIP), orDash(rep.Tunnel.Country),
 			orDash(rep.Tunnel.IPType), short(rep.Tunnel.ProviderID))
-	} else {
+	case rep.Ready:
+		// No session, on purpose: the checks below are what open one, so this
+		// is the expected state of an on-demand relay nobody has used yet.
+		fmt.Printf("  - no session right now (%s); the checks below open one\n", sessionLine(rep))
+	default:
 		bad("not healthy: tunnel=%s %s", rep.Tunnel.State, rep.KillSwitch.Reason)
 	}
 
@@ -149,17 +155,25 @@ type statusReport struct {
 	} `json:"tunnel"`
 	KillSwitch struct {
 		Open     bool   `json:"open"`
+		Armed    bool   `json:"armed"`
 		Strict   bool   `json:"strict"`
 		Reason   string `json:"reason"`
 		Active   int    `json:"active_streams"`
 		Admitted uint64 `json:"admitted_total"`
 		Refused  uint64 `json:"refused_total"`
 	} `json:"kill_switch"`
+	Sessions struct {
+		Mode        string `json:"mode"`
+		IdleTimeout string `json:"idle_timeout"`
+		IdleFor     string `json:"idle_for"`
+		Opened      uint64 `json:"opened_total"`
+	} `json:"sessions"`
 	Endpoints []struct {
 		Name string `json:"name"`
 		Addr string `json:"addr"`
 	} `json:"endpoints"`
 	Healthy bool `json:"healthy"`
+	Ready   bool `json:"ready"`
 }
 
 func fetchStatus(listen string) (*statusReport, error) {
@@ -260,11 +274,32 @@ func fetchIP(client *http.Client, checkURL string) (string, error) {
 
 // --- small helpers ---------------------------------------------------------
 
-func tick(ok bool) string {
-	if ok {
+// headline separates the two ways of not carrying traffic: resting between
+// clients, which is what an on-demand relay does most of the day, and broken.
+func headline(rep *statusReport) string {
+	switch {
+	case rep.Healthy:
 		return "\u2713 carrying traffic"
+	case rep.Ready:
+		return "- idle: no session, the next client opens one"
 	}
 	return "\u2717 not carrying traffic"
+}
+
+// sessionLine describes the session policy and what it has cost so far.
+func sessionLine(rep *statusReport) string {
+	line := rep.Sessions.Mode
+	if line == "" {
+		line = "always on"
+	}
+	if rep.Sessions.IdleTimeout != "" {
+		line += ", closed after " + rep.Sessions.IdleTimeout + " idle"
+	}
+	line += fmt.Sprintf("; %d opened", rep.Sessions.Opened)
+	if rep.Sessions.IdleFor != "" {
+		line += ", nothing carried for " + rep.Sessions.IdleFor
+	}
+	return line
 }
 
 func orDash(s string) string {

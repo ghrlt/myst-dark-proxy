@@ -148,6 +148,13 @@ type Config struct {
 	Forwards     []Forward
 	HealthListen string
 
+	// Session lifecycle. A Mysterium session is billed by the hour as well as
+	// by the gibibyte, so one that nothing is using is money spent carrying
+	// nothing. These three decide whether a session exists at all.
+	OnDemand     bool          // do not open a session until a client asks for egress
+	SessionIdle  time.Duration // close a session that has carried nothing this long; 0 keeps it
+	ReadyTimeout time.Duration // how long a client waits while its session is built
+
 	// Behaviour
 	Auth             Auth
 	Exit             ExitPolicy
@@ -182,6 +189,10 @@ func Load() (*Config, error) {
 		SocksListen:  env("RELAY_SOCKS_LISTEN", "127.0.0.1:7362"),
 		HTTPListen:   env("RELAY_HTTP_LISTEN", "127.0.0.1:7360"),
 		HealthListen: env("RELAY_HEALTH_LISTEN", "127.0.0.1:7348"),
+
+		OnDemand:     envBool("RELAY_ON_DEMAND", true),
+		SessionIdle:  envDuration("RELAY_SESSION_IDLE_TIMEOUT", 15*time.Minute),
+		ReadyTimeout: envDuration("RELAY_ACTIVATION_TIMEOUT", 60*time.Second),
 
 		StrictKillSwitch: envBool("RELAY_KILLSWITCH_STRICT", true),
 		DialTimeout:      envDuration("RELAY_DIAL_TIMEOUT", 30*time.Second),
@@ -284,6 +295,11 @@ func (c *Config) resolveIdentity() error {
 // into the myst node.
 func (c *Config) KeystoreJSON() ([]byte, error) { return os.ReadFile(c.IdentityFile) }
 
+// SessionsFollowClients reports whether the session lifecycle is driven by
+// clients rather than by the relay's own uptime - either because the first
+// session waits for a client, or because an idle one is closed again.
+func (c *Config) SessionsFollowClients() bool { return c.OnDemand || c.SessionIdle > 0 }
+
 // UpstreamProxy is the address of the myst SOCKS5 listener.
 func (c *Config) UpstreamProxy() string {
 	return net.JoinHostPort(c.ProxyHost, strconv.Itoa(c.ProxyPort))
@@ -313,6 +329,11 @@ func (c *Config) validate() error {
 	}
 	if c.ReconnectMin <= 0 || c.ReconnectMax < c.ReconnectMin {
 		return fmt.Errorf("invalid reconnect backoff window")
+	}
+	// Without a wait, the client whose arrival starts the session is also the
+	// one client guaranteed to be refused.
+	if (c.OnDemand || c.SessionIdle > 0) && c.ReadyTimeout <= 0 {
+		return fmt.Errorf("RELAY_ACTIVATION_TIMEOUT must be positive while sessions are opened on demand")
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, name, body string) string {
@@ -97,6 +98,51 @@ func TestEmptyPassphraseInFileCountsAsSet(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("passphrase = %q, want empty", got)
+	}
+}
+
+// A session is billed by the hour as well as by the byte, so the shipped
+// defaults must be the ones that stop paying when nobody is using the relay.
+func TestSessionsFollowClientsByDefault(t *testing.T) {
+	reset()
+	t.Cleanup(reset)
+	t.Setenv("MYST_IDENTITY_FILE", writeTemp(t, "identity.json",
+		`{"address":"1234567890abcdef1234567890abcdef12345678","version":3}`))
+	t.Setenv("MYST_IDENTITY_PASSPHRASE", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.OnDemand {
+		t.Error("the first session should wait for a client by default")
+	}
+	if cfg.SessionIdle != 15*time.Minute {
+		t.Errorf("idle timeout = %s, want 15m", cfg.SessionIdle)
+	}
+	if !cfg.SessionsFollowClients() {
+		t.Error("session lifecycle is not tied to clients")
+	}
+	if cfg.ReadyTimeout <= 0 {
+		t.Error("a client must be given some time to have its session built")
+	}
+}
+
+func TestOnDemandNeedsAWaitToBeUsable(t *testing.T) {
+	c := &Config{
+		SocksListen:  "127.0.0.1:7362",
+		ProxyPort:    40000,
+		ReconnectMin: time.Second,
+		ReconnectMax: time.Minute,
+		OnDemand:     true,
+		ReadyTimeout: 0,
+	}
+	if err := c.validate(); err == nil {
+		t.Fatal("on-demand with no activation wait refuses the very client that starts the session")
+	}
+	c.ReadyTimeout = 30 * time.Second
+	if err := c.validate(); err != nil {
+		t.Fatalf("valid on-demand configuration rejected: %v", err)
 	}
 }
 

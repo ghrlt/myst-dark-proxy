@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/frontend"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/gate"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/socks"
@@ -53,6 +54,11 @@ func echoServer(t *testing.T) net.Listener {
 
 func startServer(t *testing.T, tun *fakeTunnel, g *gate.Gate) string {
 	t.Helper()
+	return startFrontend(t, frontend.Base{Dialer: tun, Gate: g})
+}
+
+func startFrontend(t *testing.T, base frontend.Base) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -60,13 +66,12 @@ func startServer(t *testing.T, tun *fakeTunnel, g *gate.Gate) string {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	srv := New(frontend.Base{
-		Listen:      addr,
-		Dialer:      tun,
-		Gate:        g,
-		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		DialTimeout: 5 * time.Second,
-	}, "", "")
+	base.Listen = addr
+	base.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if base.DialTimeout == 0 {
+		base.DialTimeout = 5 * time.Second
+	}
+	srv := New(base, "", "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -225,6 +230,102 @@ func TestUDPAssociateIsRefusedRatherThanLeaked(t *testing.T) {
 	if head[1] != socks.RepCommandNotSupport {
 		t.Fatalf("UDP ASSOCIATE answered 0x%02x (%s), want command-not-supported",
 			head[1], socks.ReplyText(head[1]))
+	}
+}
+
+// An on-demand relay rests with no session and the gate armed. The client that
+// arrives is the one that pays for the session being built, so it must be made
+// to wait for it rather than refused - and nothing may be carried until the
+// gate actually opens.
+func TestOnDemandClientWaitsForTheSessionItStarts(t *testing.T) {
+	echo := echoServer(t)
+	tun := &fakeTunnel{} // no session yet
+	g := gate.New(context.Background(), true)
+	g.Arm("no session: waiting for a client")
+	wants := demand.New()
+
+	proxy := startFrontend(t, frontend.Base{
+		Dialer:    tun,
+		Gate:      g,
+		Demand:    wants,
+		ReadyWait: 5 * time.Second,
+	})
+
+	// Stand in for the supervisor: asleep until a client asks, then a session
+	// appears a moment later.
+	built := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := wants.Wait(ctx, 0); err != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+		tun.up.Store(true)
+		g.Open()
+		close(built)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &socks.Client{Address: proxy}
+	conn, err := client.DialContext(ctx, "tcp", echo.Addr().String())
+	if err != nil {
+		t.Fatalf("client was refused instead of waiting for its own session: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case <-built:
+	default:
+		t.Fatal("the client was served before any session existed")
+	}
+
+	// While a stream is open the relay is in use: an idle timer running here
+	// would close the session under a long download.
+	if idle, _ := wants.IdleFor(); idle != 0 {
+		t.Fatalf("idle timer ran while a stream was open: %s", idle)
+	}
+
+	_ = conn.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && wants.Active() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if wants.Active() != 0 {
+		t.Fatal("the stream ended but its claim on the session was never released")
+	}
+}
+
+// Waiting is for a session that is coming. A failed tunnel is not, and a client
+// hearing about it a minute late would be worse than one hearing now.
+func TestOnDemandDoesNotWaitOnAFailedTunnel(t *testing.T) {
+	echo := echoServer(t)
+	tun := &fakeTunnel{}
+	g := gate.New(context.Background(), true)
+	g.Close("tunnel down")
+	wants := demand.New()
+
+	proxy := startFrontend(t, frontend.Base{
+		Dialer:    tun,
+		Gate:      g,
+		Demand:    wants,
+		ReadyWait: 30 * time.Second,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &socks.Client{Address: proxy}
+
+	start := time.Now()
+	if _, err := client.DialContext(ctx, "tcp", echo.Addr().String()); err == nil {
+		t.Fatal("relay served a client while the tunnel was down")
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Fatalf("refusal took %s; a down tunnel must refuse immediately", waited)
+	}
+	if tun.dials.Load() != 0 {
+		t.Fatalf("kill switch let %d dial(s) through while the tunnel was down", tun.dials.Load())
 	}
 }
 

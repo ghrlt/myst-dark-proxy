@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/gate"
 )
 
@@ -36,6 +37,16 @@ type Base struct {
 	Log         *slog.Logger
 	DialTimeout time.Duration
 	IdleTimeout time.Duration
+
+	// Demand, when set, makes sessions follow clients instead of the clock: a
+	// client's arrival is what opens a Mysterium session, and the last stream
+	// ending is what starts the idle timer that closes it again. Nil keeps the
+	// tunnel up permanently, which is simpler and costs by the hour.
+	Demand *demand.Tracker
+	// ReadyWait bounds how long a client is made to wait while a session is
+	// built for it. It applies only while the kill switch is armed - shut with
+	// a session coming - so a failed tunnel still refuses immediately.
+	ReadyWait time.Duration
 }
 
 // Accept runs the accept loop on Listen, invoking handle for each client. It
@@ -135,18 +146,57 @@ func copyWithIdle(dst, src net.Conn, idle time.Duration) {
 }
 
 // Enter takes a kill-switch permit and dials target through the tunnel. The
-// caller owns the returned session and must close it.
+// caller owns the returned session and must close it, and must close the
+// returned connection: that is what releases the client's claim on the session
+// and lets the idle timer start.
 func (b *Base) Enter(ctx context.Context, target string) (*gate.Session, net.Conn, error) {
+	release := func() {}
+	if b.Demand != nil {
+		// Asking is what starts a session when there is none, so this comes
+		// before the gate rather than after it.
+		b.Demand.Request()
+		if b.ReadyWait > 0 {
+			waitCtx, cancel := context.WithTimeout(ctx, b.ReadyWait)
+			err := b.Gate.WaitOpen(waitCtx)
+			cancel()
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		release = b.Demand.Hold()
+	}
+
 	sess, err := b.Gate.Enter()
 	if err != nil {
+		release()
 		return nil, nil, err
 	}
 	dialCtx, cancel := context.WithTimeout(sess.Context, b.DialTimeout)
 	defer cancel()
 	conn, err := b.Dialer.DialContext(dialCtx, "tcp", target)
 	if err != nil {
+		release()
 		sess.Close()
 		return nil, nil, err
 	}
-	return sess, conn, nil
+	if b.Demand == nil {
+		return sess, conn, nil
+	}
+	return sess, &heldConn{Conn: conn, release: release}, nil
+}
+
+// heldConn keeps a claim on the tunnel for as long as the stream it carries is
+// open. Every frontend closes its upstream connection when the stream ends -
+// including when the kill switch tears it down - so this is the one place that
+// sees the end of every stream, whichever way it ends.
+type heldConn struct {
+	net.Conn
+	release func()
+	once    sync.Once
+}
+
+func (c *heldConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
 }

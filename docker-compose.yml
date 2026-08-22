@@ -120,6 +120,12 @@ services:
       RELAY_KILLSWITCH_STRICT: ${RELAY_KILLSWITCH_STRICT:-true}
       RELAY_DIAL_TIMEOUT: ${RELAY_DIAL_TIMEOUT:-30s}
       RELAY_IDLE_TIMEOUT: ${RELAY_IDLE_TIMEOUT:-0}
+
+      # Sessions are billed by the hour as well as by the gibibyte, so by
+      # default one exists only while something is using it.
+      RELAY_ON_DEMAND: ${RELAY_ON_DEMAND:-true}
+      RELAY_SESSION_IDLE_TIMEOUT: ${RELAY_SESSION_IDLE_TIMEOUT:-15m}
+      RELAY_ACTIVATION_TIMEOUT: ${RELAY_ACTIVATION_TIMEOUT:-60s}
       RELAY_ROTATE_EVERY: ${RELAY_ROTATE_EVERY:-0}
       RELAY_DNS_MODE: ${RELAY_DNS_MODE:-provider}
       RELAY_EXIT_CHECK_URL: ${RELAY_EXIT_CHECK_URL-https://api.ipify.org}

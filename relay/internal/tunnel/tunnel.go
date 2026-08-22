@@ -22,6 +22,11 @@ const (
 	StateConnecting State = "connecting"
 	StateUp         State = "up"
 	StateFailed     State = "failed"
+	// StateIdle is "no session, on purpose": sessions are opened on demand and
+	// nothing has asked for one. No traffic is carried - Usable is false, and
+	// the kill switch stays shut - but nothing is wrong either, and nothing is
+	// being billed. The next client's arrival is what builds a session.
+	StateIdle State = "idle"
 )
 
 // Usable reports whether traffic may be carried.

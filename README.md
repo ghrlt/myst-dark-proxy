@@ -31,6 +31,11 @@ The relay sits in front of that, translating SOCKS5 / HTTP / raw TCP onto it and
 enforcing the kill switch. Target hostnames are passed to the exit node
 verbatim, so **DNS resolves at the exit** and never locally.
 
+The session follows the clients rather than the clock: none is opened until
+something connects to a proxy port, and one nothing has used for 15 minutes is
+closed again, because providers charge by the hour as well as by the gibibyte.
+See [Sessions and what they cost](#sessions-and-what-they-cost).
+
 ### Node behaviour worth knowing
 
 Four things about `--proxymode` are undocumented and were established by testing
@@ -139,12 +144,19 @@ RELAY_RAW_TARGET=example.com:443
                    "ip_type": "residential", "exit_ip": "160.191.77.197" },
   "kill_switch": { "open": true, "strict": true, "active_streams": 3,
                    "admitted_total": 128, "refused_total": 4 },
-  "healthy": true
+  "sessions":    { "mode": "on demand", "idle_timeout": "15m0s",
+                   "idle_for": "2m5s", "opened_total": 3 },
+  "healthy": true, "ready": true
 }
 ```
 
-`/healthz` returns `200` only while traffic is actually being carried, `503`
-otherwise. `/metrics` serves the same counters in Prometheus format.
+`healthy` is the strict reading: a session is up and the gate is open, so
+traffic is moving this instant. `ready` also covers resting - no session,
+because nothing has asked for one (see [Sessions and what they
+cost](#sessions-and-what-they-cost)). `/healthz` reports **readiness**, so a
+supervisor does not restart a relay for waiting: `200` while carrying or
+resting, `503` when something is actually wrong. `/metrics` serves the same
+counters in Prometheus format.
 
 ## Configuration
 
@@ -157,6 +169,9 @@ wins). Full annotated list in [`.env.example`](.env.example).
 | `RELAY_SOCKS_LISTEN` / `RELAY_HTTP_LISTEN` / `RELAY_RAW_LISTEN` | fixed ports |
 | `RELAY_PROXY_USER` / `RELAY_PROXY_PASS` | optional proxy auth, both frontends |
 | `RELAY_KILLSWITCH_STRICT` | `true` also tears down streams already open |
+| `RELAY_ON_DEMAND` | open the session at the first client, not at startup |
+| `RELAY_SESSION_IDLE_TIMEOUT` | close a session that has carried nothing this long (`0` keeps it) |
+| `RELAY_ACTIVATION_TIMEOUT` | how long a client waits while its session is built |
 | `EXIT_COUNTRY`, `EXIT_IP_TYPE`, `EXIT_MIN_QUALITY`, `EXIT_MAX_LATENCY` | exit policy allow-lists |
 | `EXIT_PROVIDER_ID` | pin one provider, ignoring the filters |
 | `RELAY_ROTATE_EVERY` | change exit on a timer |
@@ -174,6 +189,12 @@ Three independent layers:
    `0x02 not allowed`, HTTP answers `503`, the raw port closes. In strict mode
    established streams are torn down too, so no stream outlives its exit.
 
+While sessions are opened on demand the shut gate has two flavours. *Armed* is
+shut with a session on its way, and a client that arrives waits for the one its
+own arrival started. *Closed* is a tunnel that failed, and refuses at once. The
+difference is decided when the client arrives, so a failure never turns into a
+minute of hope - and nothing is carried in either state.
+
 The tunnel is not announced as usable until it has **completed a real request**
 through the exit - a provider can establish a session cleanly and still carry
 nothing (a dead DNS resolver answers every CONNECT with 502). Such a provider is
@@ -185,6 +206,42 @@ refusing, established streams torn down, reconnect to a fresh exit within ~15 s.
 ```bash
 make verify-kill   # stops the node, checks every port refuses, restarts it
 make test          # unit tests for the gate and the SOCKS5 frontend
+```
+
+## Sessions and what they cost
+
+A Mysterium session is billed **per hour as well as per gibibyte**, so one that
+nobody is using still spends the identity's balance. By default the relay
+therefore holds a session only while something is using it: none is opened
+until a client connects to a proxy port, and one that has carried nothing for
+`RELAY_SESSION_IDLE_TIMEOUT` (15m) is closed again. A relay started at boot and
+first used at noon is billed from noon.
+
+Measured against node 1.39.5 on 2026-08-22, at the price every provider was
+advertising that day - 0.000445 MYST/hour and 3.56 MYST/GiB, MYST at $0.11:
+
+| | |
+|---|---|
+| holding an idle session | 0.000445 MYST/h, plus ~13 KiB/h of keepalives (0.000045) |
+| | = **0.00049 MYST/h**, about 0.35 MYST (~$0.04) per month held open |
+| opening one | ~8 KiB and ~12 s - WireGuard handshake plus the egress proof |
+| | = **0.000027 MYST**, what ~3.3 minutes of idling costs |
+
+So dropping an idle session pays for its own reconnect within minutes. The
+absolute numbers are small - a month of idling costs about what 100 MiB of
+traffic does - but so is light use: for a relay that moves a few hundred MiB a
+month, holding the tunnel open around the clock is most of the bill.
+
+What it costs instead is latency: the first request after a lull waits while a
+session is built - ~12 s on the reference setup, more when the first provider
+tried turns out to be unusable and another has to be picked, bounded by
+`RELAY_ACTIVATION_TIMEOUT` (60s). Only a session that is actually coming is
+worth waiting for: **a tunnel that has failed refuses immediately**, in 4 ms
+measured, so the kill switch reacts exactly as fast as it did before.
+
+```bash
+RELAY_ON_DEMAND=false            # connect at startup, as earlier versions did
+RELAY_SESSION_IDLE_TIMEOUT=0     # and never close it
 ```
 
 ## Caveats
@@ -208,7 +265,9 @@ make test          # unit tests for the gate and the SOCKS5 frontend
   `RELAY_EXIT_CHECK_URL` (default `https://api.ipify.org`), through the tunnel.
   Setting it empty removes that request and the guarantee it provides.
 - **Sessions cost MYST.** The identity is charged per hour and per GiB by the
-  provider. An empty identity means no tunnel, and the relay refuses to start.
+  provider, which is why sessions follow clients by default - see [Sessions and
+  what they cost](#sessions-and-what-they-cost). An empty identity means no
+  tunnel, and the relay refuses to start.
 - **The Windows binary is unsigned** - SmartScreen will warn. Verify the SHA-256
   published with the release.
 - **One session at a time.** The `tunnel.Tunnel` interface admits a pool of

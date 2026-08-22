@@ -11,6 +11,12 @@
 //  3. Policy: this gate. While the tunnel is not up, new streams are refused;
 //     in strict mode, established streams are torn down as well, so no stream
 //     survives across an exit change.
+//
+// A shut gate has two flavours. Closed means refuse, now: the tunnel failed and
+// the honest answer to a client is an immediate error. Armed means shut on
+// purpose with a session about to be built - the state a relay rests in when
+// sessions are opened on demand - and a client that arrives is made to wait for
+// the session its own arrival starts. Neither flavour carries a byte.
 package gate
 
 import (
@@ -60,6 +66,8 @@ type Gate struct {
 
 	mu       sync.RWMutex
 	open     bool
+	armed    bool          // shut, but a session is expected: waiters may wait
+	change   chan struct{} // closed and replaced on every state change
 	reason   string
 	changed  time.Time
 	current  *epoch
@@ -72,7 +80,13 @@ type Gate struct {
 // New returns a gate that starts closed. strict tears established streams down
 // when the gate shuts; otherwise they are allowed to drain.
 func New(parent context.Context, strict bool) *Gate {
-	g := &Gate{strict: strict, parent: parent, reason: "starting up", changed: time.Now()}
+	g := &Gate{
+		strict:  strict,
+		parent:  parent,
+		reason:  "starting up",
+		changed: time.Now(),
+		change:  make(chan struct{}),
+	}
 	g.current = g.newEpoch()
 	g.current.cancel() // closed until the tunnel reports up
 	return g
@@ -92,25 +106,89 @@ func (g *Gate) Open() {
 	}
 	g.current = g.newEpoch()
 	g.open = true
+	g.armed = false
 	g.reason = ""
 	g.changed = time.Now()
+	g.broadcast()
 }
 
-// Close refuses traffic, recording why.
-func (g *Gate) Close(reason string) {
+// Close refuses traffic, recording why. Callers waiting in WaitOpen are
+// released with that refusal rather than left hanging.
+func (g *Gate) Close(reason string) { g.shut(reason, false) }
+
+// Arm shuts the gate the same way Close does, but marks the closure as
+// expected: there is no session because nothing has asked for one, and a
+// client's arrival is what builds it. Waiters in WaitOpen keep waiting.
+func (g *Gate) Arm(reason string) { g.shut(reason, true) }
+
+func (g *Gate) shut(reason string, armed bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.open {
 		g.reason = reason
+		if g.armed != armed {
+			// Waiting just became pointless (or worth doing); say so.
+			g.armed = armed
+			g.broadcast()
+		}
 		return
 	}
 	g.open = false
+	g.armed = armed
 	g.reason = reason
 	g.changed = time.Now()
 	if g.strict {
 		g.current.cancel()
 	} else {
 		g.orphans = append(g.orphans, g.current)
+	}
+	g.broadcast()
+}
+
+// broadcast releases everything blocked in WaitOpen. The lock must be held.
+func (g *Gate) broadcast() {
+	close(g.change)
+	g.change = make(chan struct{})
+}
+
+// WaitOpen blocks until the gate admits traffic, and is how an on-demand relay
+// makes a client wait for the session its own arrival starts. It carries no
+// traffic and grants no permit: the caller still has to get through Enter.
+//
+// Only the state it finds on arrival decides whether waiting is on offer. A
+// gate that is already closed refuses at once - a client whose tunnel has
+// failed deserves the bad news now rather than in a minute, and that is what
+// keeps the kill switch's reaction time honest. A caller admitted to the wait
+// then stays in it until the gate opens or its own patience runs out, because
+// the first provider tried is quite often not the one that works: releasing it
+// on that first failure would refuse the one client actually waiting for the
+// session, moments before the retry that succeeds.
+func (g *Gate) WaitOpen(ctx context.Context) error {
+	arrival := true
+	for {
+		g.mu.Lock()
+		if g.open {
+			g.mu.Unlock()
+			return nil
+		}
+		if arrival && !g.armed {
+			reason := g.reason
+			g.refused++
+			g.mu.Unlock()
+			return &ErrClosed{Reason: reason}
+		}
+		arrival = false
+		change, reason := g.change, g.reason
+		g.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			g.mu.Lock()
+			g.refused++
+			g.mu.Unlock()
+			return &ErrClosed{Reason: "waited for a session, none came up (" + reason + ")"}
+		case <-change:
+		}
 	}
 }
 
@@ -140,7 +218,9 @@ func (g *Gate) Shutdown() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.open = false
+	g.armed = false
 	g.reason = "shutting down"
+	g.broadcast()
 	g.current.cancel()
 	for _, e := range g.orphans {
 		e.cancel()
@@ -151,6 +231,7 @@ func (g *Gate) Shutdown() {
 // Stats is a snapshot of gate counters for health reporting.
 type Stats struct {
 	Open     bool      `json:"open"`
+	Armed    bool      `json:"armed,omitempty"`
 	Strict   bool      `json:"strict"`
 	Reason   string    `json:"reason,omitempty"`
 	Since    time.Time `json:"since"`
@@ -165,6 +246,7 @@ func (g *Gate) Stats() Stats {
 	defer g.mu.RUnlock()
 	return Stats{
 		Open:     g.open,
+		Armed:    g.armed,
 		Strict:   g.strict,
 		Reason:   g.reason,
 		Since:    g.changed,

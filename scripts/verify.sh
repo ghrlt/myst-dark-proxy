@@ -41,11 +41,22 @@ else
   python3 - "$STATUS" <<'PY'
 import json,sys
 s=json.loads(sys.argv[1])
-t=s["tunnel"]; k=s["kill_switch"]
-mark = "\033[32m✓\033[0m" if s["healthy"] else "\033[31m✗\033[0m"
-print(f"  {mark} healthy={s['healthy']} tunnel={t['state']} exit={t.get('exit_ip','?')} "
-      f"country={t.get('country','?')} ip_type={t.get('ip_type','?')}")
-print(f"      provider {t.get('provider_id','?')}")
+t=s["tunnel"]; k=s["kill_switch"]; sess=s.get("sessions",{})
+# Three states, not two: carrying traffic, resting between clients with no
+# session (which is what an on-demand relay does most of the day), or broken.
+if s["healthy"]:
+    mark = "\033[32m✓\033[0m"
+elif s.get("ready"):
+    mark = "-"
+else:
+    mark = "\033[31m✗\033[0m"
+print(f"  {mark} healthy={s['healthy']} ready={s.get('ready', s['healthy'])} tunnel={t['state']} "
+      f"exit={t.get('exit_ip','?')} country={t.get('country','?')} ip_type={t.get('ip_type','?')}")
+if t.get("provider_id"):
+    print(f"      provider {t['provider_id']}")
+if sess:
+    print(f"      sessions: {sess.get('mode','?')} idle_timeout={sess.get('idle_timeout','-')} "
+          f"opened={sess.get('opened_total',0)} idle_for={sess.get('idle_for','-')}")
 print(f"      kill switch: open={k['open']} strict={k['strict']} active={k['active_streams']} "
       f"admitted={k['admitted_total']} refused={k['refused_total']}")
 PY
@@ -53,8 +64,9 @@ fi
 
 head_ "SOCKS5 on ${BIND}:${SOCKS}"
 # socks5h keeps name resolution at the exit node: a DNS leak would show up as a
-# resolution happening here instead.
-S_IP=$(curl -s --max-time 30 $AUTH --proxy "socks5h://${BIND}:${SOCKS}" "$IPSVC")
+# resolution happening here instead. The timeout allows for a session being
+# built on the spot: with RELAY_ON_DEMAND this request is what opens one.
+S_IP=$(curl -s --max-time 90 $AUTH --proxy "socks5h://${BIND}:${SOCKS}" "$IPSVC")
 if ! printf '%s' "$S_IP" | grep -qE '^[0-9a-fA-F:.]+$'; then
   bad "no usable response through SOCKS5 (got '${S_IP:-empty}')"
 elif [ "$S_IP" = "$DIRECT" ]; then
@@ -64,7 +76,7 @@ else
 fi
 
 head_ "HTTP proxy on ${BIND}:${HTTP}"
-H_IP=$(curl -s --max-time 30 $AUTH --proxy "http://${BIND}:${HTTP}" "$IPSVC")
+H_IP=$(curl -s --max-time 90 $AUTH --proxy "http://${BIND}:${HTTP}" "$IPSVC")
 if ! printf '%s' "$H_IP" | grep -qE '^[0-9a-fA-F:.]+$'; then
   bad "no usable response through the HTTP proxy (got '${H_IP:-empty}')"
 elif [ "$H_IP" = "$DIRECT" ]; then
@@ -73,7 +85,7 @@ else
   ok "HTTP CONNECT egressed from $H_IP"
 fi
 
-H_PLAIN=$(curl -s --max-time 30 $AUTH --proxy "http://${BIND}:${HTTP}" "http://api.ipify.org")
+H_PLAIN=$(curl -s --max-time 90 $AUTH --proxy "http://${BIND}:${HTTP}" "http://api.ipify.org")
 # Must look like an address: the proxy reports its own errors in the body, and
 # an error page is not a successful fetch.
 if ! printf '%s' "$H_PLAIN" | grep -qE '^[0-9a-fA-F:.]+$'; then
@@ -92,7 +104,7 @@ if [ -n "${RELAY_RAW_TARGET:-}" ]; then
   if python3 - "$BIND" "$RAW" <<'PYEOF'
 import socket, sys
 try:
-    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), 20)
+    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), 90)
 except Exception as e:
     print(f"connect failed: {e}"); sys.exit(1)
 s.settimeout(4)
