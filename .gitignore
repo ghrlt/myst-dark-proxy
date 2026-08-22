@@ -1,0 +1,13 @@
+# Local configuration and anything derived from it
+.env
+.env.*
+!.env.example
+
+# Never commit key material
+secrets/
+*.key
+UTC--*
+
+# Build output
+bin/
+dist/
