@@ -11,9 +11,9 @@ cd "$(dirname "$0")/.." || exit 1
 [ -f .env ] && { set -a; . ./.env; set +a; }
 
 BIND=${RELAY_BIND:-127.0.0.1}
-SOCKS=${RELAY_SOCKS_PORT:-1080}
-HTTP=${RELAY_HTTP_PORT:-8080}
-RAW=${RELAY_RAW_PORT:-1090}
+SOCKS=${RELAY_SOCKS_PORT:-7362}
+HTTP=${RELAY_HTTP_PORT:-7360}
+RAW=${RELAY_RAW_PORT:-7339}
 HEALTH=${RELAY_HEALTH_PORT:-9090}
 AUTH=""
 [ -n "${RELAY_PROXY_USER:-}" ] && AUTH="--proxy-user ${RELAY_PROXY_USER}:${RELAY_PROXY_PASS}"
@@ -58,7 +58,7 @@ S_IP=$(curl -s --max-time 30 $AUTH --proxy "socks5h://${BIND}:${SOCKS}" "$IPSVC"
 if ! printf '%s' "$S_IP" | grep -qE '^[0-9a-fA-F:.]+$'; then
   bad "no usable response through SOCKS5 (got '${S_IP:-empty}')"
 elif [ "$S_IP" = "$DIRECT" ]; then
-  bad "SOCKS5 egressed from this host's own address ($S_IP) — that is a leak"
+  bad "SOCKS5 egressed from this host's own address ($S_IP) - that is a leak"
 else
   ok "SOCKS5 egressed from $S_IP (not $DIRECT)"
 fi
@@ -68,7 +68,7 @@ H_IP=$(curl -s --max-time 30 $AUTH --proxy "http://${BIND}:${HTTP}" "$IPSVC")
 if ! printf '%s' "$H_IP" | grep -qE '^[0-9a-fA-F:.]+$'; then
   bad "no usable response through the HTTP proxy (got '${H_IP:-empty}')"
 elif [ "$H_IP" = "$DIRECT" ]; then
-  bad "HTTP proxy egressed from this host's own address ($H_IP) — that is a leak"
+  bad "HTTP proxy egressed from this host's own address ($H_IP) - that is a leak"
 else
   ok "HTTP CONNECT egressed from $H_IP"
 fi
@@ -79,7 +79,7 @@ H_PLAIN=$(curl -s --max-time 30 $AUTH --proxy "http://${BIND}:${HTTP}" "http://a
 if ! printf '%s' "$H_PLAIN" | grep -qE '^[0-9a-fA-F:.]+$'; then
   bad "plain HTTP through the proxy failed (got '${H_PLAIN:-empty}')"
 elif [ "$H_PLAIN" = "$DIRECT" ]; then
-  bad "plain HTTP egressed from this host's own address ($H_PLAIN) — that is a leak"
+  bad "plain HTTP egressed from this host's own address ($H_PLAIN) - that is a leak"
 else
   ok "HTTP absolute-URI (non-CONNECT) egressed from $H_PLAIN"
 fi
@@ -125,7 +125,7 @@ if [ "${1:-}" = "--kill" ]; then
   OUT=$(curl -s --max-time 20 $AUTH --proxy "socks5h://${BIND}:${SOCKS}" "$IPSVC" 2>&1)
   RC=$?
   if [ $RC -eq 0 ] && [ -n "$OUT" ]; then
-    bad "traffic still flowed with the tunnel down (got '$OUT') — THE KILL SWITCH FAILED"
+    bad "traffic still flowed with the tunnel down (got '$OUT') - THE KILL SWITCH FAILED"
   else
     ok "SOCKS5 refused traffic with the tunnel down (curl exit $RC)"
   fi
@@ -134,7 +134,7 @@ if [ "${1:-}" = "--kill" ]; then
   if [ "$HOUT" = "503" ] || [ -z "$HOUT" ] || [ "$HOUT" = "000" ]; then
     ok "HTTP proxy refused traffic with the tunnel down (status ${HOUT:-none})"
   else
-    bad "HTTP proxy answered $HOUT with the tunnel down — THE KILL SWITCH FAILED"
+    bad "HTTP proxy answered $HOUT with the tunnel down - THE KILL SWITCH FAILED"
   fi
 
   HEALTHRC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${BIND}:${HEALTH}/healthz")

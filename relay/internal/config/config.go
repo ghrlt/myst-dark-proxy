@@ -179,8 +179,8 @@ func Load() (*Config, error) {
 		TequilaHost: env("MYST_TEQUILAPI_HOST", "127.0.0.1"),
 		TequilaPort: envInt("MYST_TEQUILAPI_PORT", 4050),
 
-		SocksListen:  env("RELAY_SOCKS_LISTEN", "127.0.0.1:1080"),
-		HTTPListen:   env("RELAY_HTTP_LISTEN", "127.0.0.1:8080"),
+		SocksListen:  env("RELAY_SOCKS_LISTEN", "127.0.0.1:7362"),
+		HTTPListen:   env("RELAY_HTTP_LISTEN", "127.0.0.1:7360"),
 		HealthListen: env("RELAY_HEALTH_LISTEN", "127.0.0.1:9090"),
 
 		StrictKillSwitch: envBool("RELAY_KILLSWITCH_STRICT", true),

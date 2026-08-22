@@ -37,7 +37,7 @@ FORWARD=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)
 if [ "$FORWARD" = "1" ]; then
   ok "net.ipv4.ip_forward=1"
 else
-  bad "net.ipv4.ip_forward=0 — containers have no outbound connectivity" \
+  bad "net.ipv4.ip_forward=0 - containers have no outbound connectivity" \
       "sudo sysctl -w net.ipv4.ip_forward=1   (persist: echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-docker-forward.conf)"
 fi
 
@@ -93,9 +93,9 @@ fi
 
 head_ "Fixed ports"
 for spec in \
-  "SOCKS5:${RELAY_SOCKS_PORT:-1080}" \
-  "HTTP:${RELAY_HTTP_PORT:-8080}" \
-  "raw:${RELAY_RAW_PORT:-1090}" \
+  "SOCKS5:${RELAY_SOCKS_PORT:-7362}" \
+  "HTTP:${RELAY_HTTP_PORT:-7360}" \
+  "raw:${RELAY_RAW_PORT:-7339}" \
   "health:${RELAY_HEALTH_PORT:-9090}"; do
   name=${spec%%:*}; port=${spec##*:}
   holder=$(ss -ltnp 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {print $NF; exit}')

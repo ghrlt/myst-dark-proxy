@@ -31,9 +31,9 @@ func cmdSetup(args []string) error {
 		identity   = fs.String("identity", "", "path to the Mysterium keystore JSON (UTC--...--<address>)")
 		passphrase = fs.String("passphrase", "", "passphrase for that keystore (usually empty)")
 		passFile   = fs.String("passphrase-file", "", "read the passphrase from this file instead")
-		socksPort  = fs.Int("socks-port", 1080, "fixed local SOCKS5 port")
-		httpPort   = fs.Int("http-port", 8080, "fixed local HTTP proxy port")
-		rawPort    = fs.Int("raw-port", 0, "fixed local raw-forward port (0 disables)")
+		socksPort  = fs.Int("socks-port", 7362, "fixed local SOCKS5 port")
+		httpPort   = fs.Int("http-port", 7360, "fixed local HTTP proxy port")
+		rawPort    = fs.Int("raw-port", 7339, "fixed local raw-forward port (needs -raw-target)")
 		rawTarget  = fs.String("raw-target", "", "host:port the raw port forwards to")
 		healthPort = fs.Int("health-port", 9090, "fixed local health/status port")
 		country    = fs.String("country", "", "restrict exits to these countries, comma separated (e.g. NL,DE)")
@@ -243,7 +243,7 @@ func configFile(v configValues) string {
 	var b strings.Builder
 	w := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
 
-	w("# myst-relay configuration — written by \"mystrelay setup\".")
+	w("# myst-relay configuration - written by \"mystrelay setup\".")
 	w("# Environment variables override anything here.")
 	w("")
 	w("# The node is downloaded, started and supervised by the relay itself.")
@@ -264,7 +264,7 @@ func configFile(v configValues) string {
 		w("RELAY_RAW_LISTEN=127.0.0.1:%d", v.RawPort)
 		w("RELAY_RAW_TARGET=%s", v.RawTarget)
 	} else {
-		w("# RELAY_RAW_LISTEN=127.0.0.1:1090")
+		w("# RELAY_RAW_LISTEN=127.0.0.1:7339")
 		w("# RELAY_RAW_TARGET=example.com:443")
 	}
 	w("")
