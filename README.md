@@ -114,7 +114,7 @@ source and no reply could return.
 ```bash
 curl --proxy socks5h://127.0.0.1:7362 https://api.ipify.org   # prefer socks5h
 curl --proxy http://127.0.0.1:7360    https://api.ipify.org
-curl -s 127.0.0.1:9090/status | jq
+curl -s 127.0.0.1:7348/status | jq
 ```
 
 Firefox -> *Settings -> Network Settings -> Manual*: SOCKS5 `127.0.0.1:7362`, tick

@@ -181,7 +181,7 @@ func Load() (*Config, error) {
 
 		SocksListen:  env("RELAY_SOCKS_LISTEN", "127.0.0.1:7362"),
 		HTTPListen:   env("RELAY_HTTP_LISTEN", "127.0.0.1:7360"),
-		HealthListen: env("RELAY_HEALTH_LISTEN", "127.0.0.1:9090"),
+		HealthListen: env("RELAY_HEALTH_LISTEN", "127.0.0.1:7348"),
 
 		StrictKillSwitch: envBool("RELAY_KILLSWITCH_STRICT", true),
 		DialTimeout:      envDuration("RELAY_DIAL_TIMEOUT", 30*time.Second),

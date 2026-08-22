@@ -347,7 +347,7 @@ func driveKillSwitch(ctx context.Context, t tunnel.Tunnel, g *gate.Gate, log *sl
 func selfCheck() int {
 	listen := os.Getenv("RELAY_HEALTH_LISTEN")
 	if listen == "" {
-		listen = "127.0.0.1:9090"
+		listen = "127.0.0.1:7348"
 	}
 	_, port, err := net.SplitHostPort(listen)
 	if err != nil {

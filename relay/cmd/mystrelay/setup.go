@@ -35,7 +35,7 @@ func cmdSetup(args []string) error {
 		httpPort   = fs.Int("http-port", 7360, "fixed local HTTP proxy port")
 		rawPort    = fs.Int("raw-port", 7339, "fixed local raw-forward port (needs -raw-target)")
 		rawTarget  = fs.String("raw-target", "", "host:port the raw port forwards to")
-		healthPort = fs.Int("health-port", 9090, "fixed local health/status port")
+		healthPort = fs.Int("health-port", 7348, "fixed local health/status port")
 		country    = fs.String("country", "", "restrict exits to these countries, comma separated (e.g. NL,DE)")
 		autostart  = fs.String("autostart", "", "none | logon | boot  (prompted for when omitted)")
 		noPrompt   = fs.Bool("yes", false, "never prompt; use flags and defaults")

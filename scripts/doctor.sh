@@ -96,7 +96,7 @@ for spec in \
   "SOCKS5:${RELAY_SOCKS_PORT:-7362}" \
   "HTTP:${RELAY_HTTP_PORT:-7360}" \
   "raw:${RELAY_RAW_PORT:-7339}" \
-  "health:${RELAY_HEALTH_PORT:-9090}"; do
+  "health:${RELAY_HEALTH_PORT:-7348}"; do
   name=${spec%%:*}; port=${spec##*:}
   holder=$(ss -ltnp 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {print $NF; exit}')
   if [ -z "$holder" ]; then

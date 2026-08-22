@@ -34,7 +34,7 @@ status: ## Show container and relay status
 	@$(COMPOSE) ps
 	@printf '\n'
 	@source .env 2>/dev/null; curl -s --max-time 5 \
-		"http://$${RELAY_BIND:-127.0.0.1}:$${RELAY_HEALTH_PORT:-9090}/status" || echo "relay health endpoint not answering"
+		"http://$${RELAY_BIND:-127.0.0.1}:$${RELAY_HEALTH_PORT:-7348}/status" || echo "relay health endpoint not answering"
 
 verify: ## Prove traffic egresses through the exit node
 	@scripts/verify.sh

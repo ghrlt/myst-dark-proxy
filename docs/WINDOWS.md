@@ -69,7 +69,7 @@ Pick **logon** unless something that runs before you sign in needs the proxy.
 |---|---|
 | SOCKS5 | `127.0.0.1:7362` - prefer this, DNS is resolved at the exit node |
 | HTTP | `127.0.0.1:7360` |
-| Status | `http://127.0.0.1:9090/status` |
+| Status | `http://127.0.0.1:7348/status` |
 
 Both listen on loopback only: nothing else on your network can use them.
 
