@@ -105,7 +105,7 @@ func cmdVerify(args []string) error {
 		case err != nil:
 			bad("no usable response: %v", err)
 		case got == direct && direct != "":
-			bad("egressed from this machine's own address (%s) — that is a leak", got)
+			bad("egressed from this machine's own address (%s) - that is a leak", got)
 		default:
 			good("egressed from %s", got)
 		}
@@ -119,11 +119,11 @@ func cmdVerify(args []string) error {
 	}
 
 	fmt.Println("\nLeak notes")
-	fmt.Println("  · SOCKS5 here resolves names at the exit node, so DNS does not leak")
+	fmt.Println("  - SOCKS5 here resolves names at the exit node, so DNS does not leak")
 	fmt.Println("    through the relay. A client that resolves before connecting still can:")
 	fmt.Println("    use socks5h:// in curl, and network.proxy.socks_remote_dns=true in Firefox.")
-	fmt.Println("  · UDP is not carried. WebRTC and QUIC can leave a browser over UDP and")
-	fmt.Println("    bypass this relay entirely — see docs/WINDOWS.md for the settings that")
+	fmt.Println("  - UDP is not carried. WebRTC and QUIC can leave a browser over UDP and")
+	fmt.Println("    bypass this relay entirely - see docs/WINDOWS.md for the settings that")
 	fmt.Println("    turn them off.")
 
 	fmt.Println()
@@ -276,14 +276,14 @@ func orDash(s string) string {
 
 func short(s string) string {
 	if len(s) > 12 {
-		return s[:12] + "…"
+		return s[:12] + "..."
 	}
 	return s
 }
 
 func trunc(s string, n int) string {
 	if len(s) > n {
-		return s[:n] + "…"
+		return s[:n] + "..."
 	}
 	return s
 }

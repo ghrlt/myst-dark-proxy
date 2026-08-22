@@ -9,7 +9,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 .PHONY: help doctor up down restart logs status verify verify-kill test build fmt vet autostart autostart-off clean dist dist-windows dist-linux
 
 help: ## Show this help
-	@printf '\nmyst-relay — fail-closed proxy relay over the Mysterium network\n\n'
+	@printf '\nmyst-relay - fail-closed proxy relay over the Mysterium network\n\n'
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*?##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@printf '\n'
 
@@ -17,7 +17,7 @@ doctor: ## Preflight checks (run this first)
 	@scripts/doctor.sh
 
 up: ## Build and start the stack
-	@test -f .env || { echo "no .env — run: cp .env.example .env"; exit 1; }
+	@test -f .env || { echo "no .env - run: cp .env.example .env"; exit 1; }
 	$(COMPOSE) up -d --build
 	@printf '\nstarting up; the first connection takes a minute. Watch with: make logs\n'
 

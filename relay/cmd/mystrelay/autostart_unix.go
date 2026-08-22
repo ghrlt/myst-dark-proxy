@@ -20,7 +20,7 @@ func appDirOf(cfg string) string { return filepath.Dir(cfg) }
 // and says what to run, rather than silently asking for a root password.
 func installAutostart(o autostartOptions) error {
 	unit := fmt.Sprintf(`[Unit]
-Description=myst-relay — fail-closed proxy relay over the Mysterium network
+Description=myst-relay - fail-closed proxy relay over the Mysterium network
 After=network-online.target
 Wants=network-online.target
 

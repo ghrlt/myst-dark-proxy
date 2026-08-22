@@ -21,7 +21,7 @@ FROM scratch
 
 # The relay terminates exactly one TLS connection of its own: the egress proof
 # it makes after each reconnect. Verifying it needs a trust store, and scratch
-# has none — without this every provider is rejected as untrustworthy and the
+# has none - without this every provider is rejected as untrustworthy and the
 # relay never comes up. Client traffic is unaffected either way; it passes
 # through opaquely and is verified end to end by the client.
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

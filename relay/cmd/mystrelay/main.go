@@ -2,7 +2,7 @@
 //
 // It maintains one Mysterium session through a myst node running in proxy mode
 // and republishes it on fixed local ports: SOCKS5, HTTP, and raw port-forward.
-// Every one of those ports is fail-closed — while the tunnel is not up, clients
+// Every one of those ports is fail-closed - while the tunnel is not up, clients
 // are refused, never quietly served over the host's own connection.
 //
 // Two deployment shapes share this binary. Under Docker the node runs as its
@@ -41,7 +41,7 @@ import (
 // version is stamped at build time.
 var version = "dev"
 
-const usage = `myst-relay — fail-closed proxy relay over the Mysterium network
+const usage = `myst-relay - fail-closed proxy relay over the Mysterium network
 
 usage: mystrelay <command> [flags]
 
@@ -296,7 +296,7 @@ func run(cfg *config.Config) error {
 }
 
 // seedKeystore places the configured identity where a managed node will find
-// it, so the node is asked to unlock an identity it already holds — the same
+// it, so the node is asked to unlock an identity it already holds - the same
 // arrangement the Docker deployment gets from a read-only bind mount.
 func seedKeystore(cfg *config.Config) error {
 	dir := filepath.Join(cfg.NodeDataDir, "keystore")
@@ -376,7 +376,7 @@ func killSwitchMode(strict bool) string {
 	return "permissive (established streams may drain)"
 }
 
-// newLogger writes to stdout, or to a file when one is configured — which is
+// newLogger writes to stdout, or to a file when one is configured - which is
 // what an autostarted background process needs, having no console to write to.
 func newLogger(level, file string) (*slog.Logger, func(), error) {
 	var lvl slog.Level

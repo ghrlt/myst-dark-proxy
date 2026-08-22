@@ -190,7 +190,7 @@ func (s *Supervisor) clearStale() error {
 	raw, err := os.ReadFile(s.pidPath())
 	if err != nil {
 		return fmt.Errorf("port %s is already in use and no previous node of ours is recorded.\n"+
-			"Something else holds the node API port — another Mysterium app, or a node left by a different install.\n"+
+			"Something else holds the node API port - another Mysterium app, or a node left by a different install.\n"+
 			"Close it, or set MYST_TEQUILAPI_PORT to a free port", addr)
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))

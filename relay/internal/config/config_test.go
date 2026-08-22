@@ -82,7 +82,7 @@ func TestEnvironmentBeatsTheFile(t *testing.T) {
 	}
 }
 
-// An empty passphrase is legitimate — the Mysterium desktop app uses one — so
+// An empty passphrase is legitimate - the Mysterium desktop app uses one - so
 // it must be distinguishable from "not configured".
 func TestEmptyPassphraseInFileCountsAsSet(t *testing.T) {
 	reset()

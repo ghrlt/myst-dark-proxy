@@ -258,7 +258,7 @@ func (s ConnectionStatus) Connected() bool { return strings.EqualFold(s.Status, 
 //
 // In proxy mode the node keys each session by the proxy port it was asked to
 // bind, and these endpoints take it as ?id=. Omitting it silently reports on
-// connection 0 — which is always "NotConnected" here, and would make a
+// connection 0 - which is always "NotConnected" here, and would make a
 // supervisor tear down a perfectly healthy tunnel on its first health tick.
 func (c *Client) Connection(ctx context.Context, id int) (*ConnectionStatus, error) {
 	var out ConnectionStatus

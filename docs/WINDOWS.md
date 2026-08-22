@@ -12,7 +12,7 @@ mystrelay.exe verify    prove traffic leaves through the exit, not through you
 
 ## 1. Install
 
-Copy `mystrelay.exe` anywhere — `C:\Tools\myst-relay\` is fine — along with
+Copy `mystrelay.exe` anywhere - `C:\Tools\myst-relay\` is fine - along with
 your **Mysterium keystore file**: the `UTC--<date>--<address>` JSON your
 Mysterium app wrote, normally under `%USERPROFILE%\.mysterium\keystore\`.
 
@@ -23,14 +23,14 @@ mystrelay.exe setup
 ```
 
 It asks for the keystore path, its passphrase (the desktop app normally uses an
-empty one — just press Enter), the ports, an optional country restriction, and
+empty one - just press Enter), the ports, an optional country restriction, and
 whether to start automatically. Then it downloads the node, checks its SHA-256
 against a digest recorded in the binary, and unpacks it.
 
 Everything lands in `%LOCALAPPDATA%\myst-relay\`:
 
 ```
-config.env      settings — plain text, edit freely
+config.env      settings - plain text, edit freely
 identity.json   a copy of your keystore; the original is untouched
 node\           the Mysterium node binary
 node-data\      the node's database, keystore and logs
@@ -38,7 +38,7 @@ logs\relay.log  the relay's log
 ```
 
 > **SmartScreen** will warn that the publisher is unknown, because the binary is
-> unsigned. *More info → Run anyway*.
+> unsigned. *More info -> Run anyway*.
 
 To script it instead of answering prompts:
 
@@ -67,35 +67,35 @@ Pick **logon** unless something that runs before you sign in needs the proxy.
 
 | | |
 |---|---|
-| SOCKS5 | `127.0.0.1:1080` — prefer this, DNS is resolved at the exit node |
-| HTTP | `127.0.0.1:8080` |
+| SOCKS5 | `127.0.0.1:7362` - prefer this, DNS is resolved at the exit node |
+| HTTP | `127.0.0.1:7360` |
 | Status | `http://127.0.0.1:9090/status` |
 
 Both listen on loopback only: nothing else on your network can use them.
 
-### Windows system proxy — covers Edge, Chrome and most apps
+### Windows system proxy - covers Edge, Chrome and most apps
 
-*Settings → Network & Internet → Proxy → Manual proxy setup → Use a proxy
-server*, address `127.0.0.1`, port `8080`.
+*Settings -> Network & Internet -> Proxy -> Manual proxy setup -> Use a proxy
+server*, address `127.0.0.1`, port `7360`.
 
 Anything using the Windows HTTP stack follows this, which is the simplest way to
 catch "some apps". When the relay is down these apps fail to connect rather than
-falling back to your own connection — that is the kill switch reaching them.
+falling back to your own connection - that is the kill switch reaching them.
 
-### Firefox — has its own proxy settings
+### Firefox - has its own proxy settings
 
-*Settings → Network Settings → Manual proxy configuration*:
+*Settings -> Network Settings -> Manual proxy configuration*:
 
-- SOCKS Host `127.0.0.1`, Port `1080`, **SOCKS v5**
+- SOCKS Host `127.0.0.1`, Port `7362`, **SOCKS v5**
 - Tick **Proxy DNS when using SOCKS v5**
 
-### Chrome / Edge — follow the system proxy
+### Chrome / Edge - follow the system proxy
 
 Either use the system proxy above, or start them with an explicit one:
 
 ```
-chrome.exe --proxy-server="socks5://127.0.0.1:1080"
-msedge.exe --proxy-server="socks5://127.0.0.1:1080"
+chrome.exe --proxy-server="socks5://127.0.0.1:7362"
+msedge.exe --proxy-server="socks5://127.0.0.1:7362"
 ```
 
 Put that on a desktop shortcut if only some browsing should go through the
@@ -104,7 +104,7 @@ relay.
 ## 4. The settings that actually stop leaks
 
 **This relay carries TCP only.** UDP is refused rather than passed through, so it
-can never leak *through* the relay — but a browser can still send UDP directly,
+can never leak *through* the relay - but a browser can still send UDP directly,
 around it, and that is what would expose your real address. Two features do
 this, and both need turning off.
 
@@ -114,7 +114,7 @@ this, and both need turning off.
 
 | Setting | Value | Why |
 |---|---|---|
-| `media.peerconnection.ice.proxy_only` | `true` | WebRTC may only use the proxy — no direct UDP |
+| `media.peerconnection.ice.proxy_only` | `true` | WebRTC may only use the proxy - no direct UDP |
 | `network.http.http3.enable` | `false` | HTTP/3 is QUIC, which is UDP |
 | `network.dns.disablePrefetch` | `true` | stops name lookups made outside the proxy |
 | `network.predictor.enabled` | `false` | same, for its preconnect guesses |
@@ -130,7 +130,7 @@ Add to the shortcut alongside `--proxy-server`:
 --disable-quic --force-webrtc-ip-handling-policy=disable_non_proxied_udp
 ```
 
-To apply it to every launch instead of one shortcut, set a policy (needs admin —
+To apply it to every launch instead of one shortcut, set a policy (needs admin -
 `HKLM\SOFTWARE\Policies\Google\Chrome`, or `...\Microsoft\Edge` for Edge):
 
 | Value | Type | Data |
@@ -154,8 +154,8 @@ loudly if they match. `status` shows the live exit and the kill-switch counters.
 
 ## 6. What happens when the tunnel drops
 
-Nothing gets through. New connections are refused on every port — SOCKS5 answers
-*not allowed*, the HTTP proxy answers `503`, the raw port closes — and streams
+Nothing gets through. New connections are refused on every port - SOCKS5 answers
+*not allowed*, the HTTP proxy answers `503`, the raw port closes - and streams
 that were already open are torn down. There is no code path in the relay that
 dials the internet directly, so there is nothing to fall back to.
 
@@ -164,22 +164,22 @@ healthy once it has completed a real request through the new one.
 
 ## 7. Troubleshooting
 
-**Nothing loads and `status` says the relay is not running** — check
+**Nothing loads and `status` says the relay is not running** - check
 `%LOCALAPPDATA%\myst-relay\logs\relay.log`. Run `mystrelay.exe run` in a
 terminal to watch it live.
 
-**"port 127.0.0.1:4050 is already in use"** — another Mysterium app is running,
+**"port 127.0.0.1:4050 is already in use"** - another Mysterium app is running,
 or a node from a previous run survived. The relay clears its own leftovers
 automatically; if something else holds the port, close it or set
 `MYST_TEQUILAPI_PORT` in `config.env` to a free one.
 
-**`identity ... is "Unregistered"`** — register and fund the identity in the
+**`identity ... is "Unregistered"`** - register and fund the identity in the
 Mysterium app first. This service uses an identity, it does not create one.
 
-**Everything is refused and the log says "kill switch closed"** — that is the
+**Everything is refused and the log says "kill switch closed"** - that is the
 kill switch working; the tunnel is down. The reason is on the same line.
 
-**It picked a slow country** — set `EXIT_COUNTRY=NL,DE` (or whatever you prefer)
+**It picked a slow country** - set `EXIT_COUNTRY=NL,DE` (or whatever you prefer)
 in `config.env` and restart. `EXIT_IP_TYPE=residential` also helps against sites
 that block hosting ranges.
 

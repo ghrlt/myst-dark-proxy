@@ -1,5 +1,5 @@
 [Unit]
-Description=myst-relay — fail-closed proxy relay over the Mysterium network
+Description=myst-relay - fail-closed proxy relay over the Mysterium network
 Documentation=file://__WORKDIR__/README.md
 Requires=docker.service
 After=docker.service network-online.target

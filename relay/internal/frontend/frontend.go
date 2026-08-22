@@ -1,6 +1,6 @@
 // Package frontend holds the listener side of the relay: the fixed ports
-// clients connect to. Every frontend is handed the same two collaborators — a
-// Dialer (the tunnel) and a Gate (the kill switch) — and is forbidden from
+// clients connect to. Every frontend is handed the same two collaborators - a
+// Dialer (the tunnel) and a Gate (the kill switch) - and is forbidden from
 // opening a connection any other way.
 package frontend
 

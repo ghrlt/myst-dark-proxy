@@ -6,16 +6,16 @@ already own.
 
 Point a browser, a scraper, or a device that only knows how to open a TCP socket
 at a fixed local port, and it leaves from a Mysterium exit node instead of your
-own address. **If the tunnel is not up, nothing is carried** — the relay refuses,
+own address. **If the tunnel is not up, nothing is carried** - the relay refuses,
 it never falls back to your connection.
 
 ```
    clients                     myst-dark-proxy                    Mysterium
-┌──────────────┐   ┌──────────────────────────────────┐    ┌──────────────────┐
-│ socks5 :1080 ├──▶│  SOCKS5 ┐                        │    │                  │
-│ http   :8080 ├──▶│  HTTP   ├─▶ kill switch ─▶ node ─┼───▶│  exit provider ──┼──▶ internet
-│ raw    :1090 ├──▶│  raw    ┘                        │    │                  │
-└──────────────┘   └──────────────────────────────────┘    └──────────────────┘
++--------------+   +----------------------------------+    +------------------+
+| socks5 :7362 |-->|  SOCKS5 \                        |    |                  |
+| http   :7360 |-->|  HTTP    >  kill switch -> node -+--->|  exit provider --+---> internet
+| raw    :7339 |-->|  raw    /                        |    |                  |
++--------------+   +----------------------------------+    +------------------+
                           fail closed          myst --proxymode
 ```
 
@@ -24,7 +24,7 @@ it never falls back to your connection.
 The Mysterium node runs with `--consumer --proxymode`: no TUN device, no route
 changes, no privileges. It builds a userspace WireGuard stack and exposes it as
 a local HTTP `CONNECT` listener. Egress is therefore a *dialer*, not a
-system-wide route — nothing on the machine inherits the tunnel by accident, and
+system-wide route - nothing on the machine inherits the tunnel by accident, and
 nothing can silently bypass it.
 
 The relay sits in front of that, translating SOCKS5 / HTTP / raw TCP onto it and
@@ -49,12 +49,12 @@ makes the fixed ports real rather than best-effort.
 
 ## Requirements
 
-- A **registered, funded** Mysterium identity — the `UTC--<date>--<address>`
+- A **registered, funded** Mysterium identity - the `UTC--<date>--<address>`
   keystore JSON, normally in `~/.mysterium/keystore/`. This tool consumes an
   identity, it does not create or fund one.
 - Windows 10/11 or Linux (amd64). Docker only for the container deployment.
 
-## Setup — Windows
+## Setup - Windows
 
 Download `mystrelay.exe` from [Releases](../../releases), put it in a folder
 with your keystore JSON, and run:
@@ -64,12 +64,12 @@ mystrelay.exe setup
 ```
 
 It asks for the keystore, its passphrase (the Mysterium desktop app normally
-uses an empty one — press Enter), the ports, an optional country filter, and
+uses an empty one - press Enter), the ports, an optional country filter, and
 whether to start automatically. Then it downloads the Mysterium node, verifies
 its SHA-256 against a digest baked into the binary, and unpacks it.
 
 Everything lives in `%LOCALAPPDATA%\myst-relay\`. Uninstall is
-`mystrelay.exe autostart remove` plus deleting that folder — no services, no
+`mystrelay.exe autostart remove` plus deleting that folder - no services, no
 registry keys, no firewall rules.
 
 ```powershell
@@ -90,7 +90,7 @@ mystrelay.exe setup -yes -identity C:\path\to\UTC--...--<address> -passphrase ""
 See [docs/WINDOWS.md](docs/WINDOWS.md) for browser configuration and
 troubleshooting.
 
-## Setup — Docker
+## Setup - Docker
 
 ```bash
 cp .env.example .env      # set MYST_IDENTITY_FILE and MYST_IDENTITY_PASSPHRASE
@@ -102,7 +102,7 @@ make autostart            # start at boot (systemd)
 
 The node and the relay run as separate containers. The relay reaches the node
 over an `internal: true` network with no default route, and is published through
-a second bridge whose subnet is deliberately **not** NAT'd — so any packet it
+a second bridge whose subnet is deliberately **not** NAT'd - so any packet it
 tried to send to the internet directly would leave with an unroutable RFC1918
 source and no reply could return.
 
@@ -112,22 +112,22 @@ source and no reply could return.
 ## Usage
 
 ```bash
-curl --proxy socks5h://127.0.0.1:1080 https://api.ipify.org   # prefer socks5h
-curl --proxy http://127.0.0.1:8080    https://api.ipify.org
+curl --proxy socks5h://127.0.0.1:7362 https://api.ipify.org   # prefer socks5h
+curl --proxy http://127.0.0.1:7360    https://api.ipify.org
 curl -s 127.0.0.1:9090/status | jq
 ```
 
-Firefox → *Settings → Network Settings → Manual*: SOCKS5 `127.0.0.1:1080`, tick
+Firefox -> *Settings -> Network Settings -> Manual*: SOCKS5 `127.0.0.1:7362`, tick
 **Proxy DNS when using SOCKS v5**.
 
-Chrome / Edge follow the Windows system proxy (*Settings → Network → Proxy →
-`127.0.0.1:8080`*), or take `--proxy-server="socks5://127.0.0.1:1080"`.
+Chrome / Edge follow the Windows system proxy (*Settings -> Network -> Proxy ->
+`127.0.0.1:7360`*), or take `--proxy-server="socks5://127.0.0.1:7362"`.
 
 The raw port is a straight pipe to one fixed destination, for clients that speak
 no proxy protocol at all:
 
 ```ini
-RELAY_RAW_LISTEN=127.0.0.1:1090
+RELAY_RAW_LISTEN=127.0.0.1:7339
 RELAY_RAW_TARGET=example.com:443
 ```
 
@@ -135,7 +135,7 @@ RELAY_RAW_TARGET=example.com:443
 
 ```jsonc
 {
-  "tunnel":      { "state": "up", "provider_id": "0x…", "country": "SG",
+  "tunnel":      { "state": "up", "provider_id": "0x...", "country": "SG",
                    "ip_type": "residential", "exit_ip": "160.191.77.197" },
   "kill_switch": { "open": true, "strict": true, "active_streams": 3,
                    "admitted_total": 128, "refused_total": 4 },
@@ -175,7 +175,7 @@ Three independent layers:
    established streams are torn down too, so no stream outlives its exit.
 
 The tunnel is not announced as usable until it has **completed a real request**
-through the exit — a provider can establish a session cleanly and still carry
+through the exit - a provider can establish a session cleanly and still carry
 nothing (a dead DNS resolver answers every CONNECT with 502). Such a provider is
 put on cooldown and another is chosen.
 
@@ -191,7 +191,7 @@ make test          # unit tests for the gate and the SOCKS5 frontend
 
 - **UDP is not carried.** The node's listener is HTTP CONNECT, which tunnels TCP
   only. SOCKS5 `UDP ASSOCIATE` is answered *command not supported* rather than
-  passed through — deliberately, since a client that silently fell back to
+  passed through - deliberately, since a client that silently fell back to
   direct UDP would be the exact leak this exists to prevent.
 - **WebRTC and QUIC can leak around it.** They leave a browser over UDP,
   bypassing the proxy entirely. This is the most important thing to fix after
@@ -209,7 +209,7 @@ make test          # unit tests for the gate and the SOCKS5 frontend
   Setting it empty removes that request and the guarantee it provides.
 - **Sessions cost MYST.** The identity is charged per hour and per GiB by the
   provider. An empty identity means no tunnel, and the relay refuses to start.
-- **The Windows binary is unsigned** — SmartScreen will warn. Verify the SHA-256
+- **The Windows binary is unsigned** - SmartScreen will warn. Verify the SHA-256
   published with the release.
 - **One session at a time.** The `tunnel.Tunnel` interface admits a pool of
   several, but the shipped configuration runs one.

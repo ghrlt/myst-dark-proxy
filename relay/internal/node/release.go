@@ -1,7 +1,7 @@
 // Package node fetches and supervises a Mysterium node binary.
 //
 // The Docker deployment runs the node as its own container and the relay just
-// attaches to it. On a desktop — Windows in particular — there is no compose
+// attaches to it. On a desktop - Windows in particular - there is no compose
 // file to do that, so the relay owns the node process itself: it downloads the
 // official release, verifies it, starts it in proxy mode, and keeps it alive.
 package node

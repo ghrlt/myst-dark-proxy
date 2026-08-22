@@ -4,7 +4,7 @@
 // In proxy mode the node builds no TUN device and changes no routes: it exposes
 // an HTTP CONNECT listener backed by a userspace WireGuard stack whose packets
 // leave through the chosen provider. That is exactly the shape this relay wants
-// — egress is a dialer, not a system-wide route, so nothing on the host can
+// - egress is a dialer, not a system-wide route, so nothing on the host can
 // accidentally inherit it and nothing can silently bypass it.
 //
 // Two behaviours of the node in this mode are worth knowing, because both are
@@ -78,7 +78,7 @@ type Tunnel struct {
 	// suspect carries a nudge from the data path to the supervisor: a stream
 	// that could not reach the node's proxy is the earliest evidence the
 	// tunnel is gone, and waiting for the next health tick to notice would
-	// leave the gate open — admitting streams that are certain to fail.
+	// leave the gate open - admitting streams that are certain to fail.
 	suspect chan struct{}
 
 	mu           sync.RWMutex
@@ -315,8 +315,8 @@ func (t *Tunnel) session(ctx context.Context) error {
 	}
 
 	// Prove the exit actually carries traffic before announcing the tunnel as
-	// usable. A session can establish perfectly and still be useless — a
-	// provider whose DNS resolver is dead answers every CONNECT with 502 — and
+	// usable. A session can establish perfectly and still be useless - a
+	// provider whose DNS resolver is dead answers every CONNECT with 502 - and
 	// a relay that reported itself healthy in that state would be telling the
 	// one lie a kill switch must never tell. Providers are untrusted third
 	// parties, so the tunnel is not up until it has completed a real request.

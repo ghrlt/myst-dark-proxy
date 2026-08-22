@@ -38,7 +38,7 @@ render() {
 
 case "$ACTION" in
   enable)
-    [ -f .env ] || { echo "error: .env is missing — cp .env.example .env first" >&2; exit 1; }
+    [ -f .env ] || { echo "error: .env is missing - cp .env.example .env first" >&2; exit 1; }
     echo "installing $UNIT ($SCOPE scope) for $WORKDIR"
     if [ "$SCOPE" = "user" ]; then
       mkdir -p "$UNIT_DIR"

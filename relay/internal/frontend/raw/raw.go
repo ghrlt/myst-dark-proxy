@@ -1,7 +1,7 @@
 // Package raw serves the raw frontend: a fixed local port spliced to a fixed
 // remote endpoint through the tunnel.
 //
-// This is the "anything" case — no proxy protocol, no handshake, no client
+// This is the "anything" case - no proxy protocol, no handshake, no client
 // configuration. Whatever bytes arrive are carried, so clients that cannot be
 // pointed at a proxy (appliances, game clients, legacy binaries) still egress
 // through the exit node, and still cannot bypass the kill switch.
