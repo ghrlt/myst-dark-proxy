@@ -1,0 +1,150 @@
+name: myst-relay
+
+# The network layout is the outermost layer of the kill switch.
+#
+#   edge     myst only, NAT'd as usual. Carries the Mysterium control plane and
+#            the encrypted session to the exit node.
+#   private  internal:true. Carries relay -> myst and nothing else. Docker
+#            gives containers on an internal network no default route, so this
+#            link cannot reach anything but the node.
+#   publish  relay only, and only so that Docker can publish the fixed ports:
+#            port publishing does not work into an internal network, verified
+#            on Docker 29. Masquerading is deliberately turned OFF for this
+#            subnet, so any packet the relay might send to the internet leaves
+#            with an unroutable RFC1918 source and no reply can ever come back.
+#            No connection it attempts can complete.
+networks:
+  edge:
+    driver: bridge
+  private:
+    driver: bridge
+    internal: true
+  publish:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+
+volumes:
+  myst-data:
+
+services:
+  # Mysterium node in consumer + proxy mode: no TUN device, no route changes,
+  # no privileges. It publishes an HTTP CONNECT listener whose packets leave
+  # through the chosen provider.
+  #
+  # The image's own entrypoint supplies --config-dir/--data-dir/--runtime-dir
+  # and then appends this command, so these are global flags followed by the
+  # `daemon` subcommand.
+  myst:
+    image: mysteriumnetwork/myst:${MYST_IMAGE_TAG:-latest}
+    container_name: myst-relay-node
+    restart: unless-stopped
+    command:
+      - --consumer
+      - --proxymode
+      - --tequilapi.address=0.0.0.0
+      - --tequilapi.port=4050
+      - --tequilapi.allowed-hostnames=localhost,.localhost,.localdomain
+      - --proxy.bind.address=0.0.0.0
+      - --ui.enable=false
+      - --log-level=${MYST_LOG_LEVEL:-info}
+      - daemon
+    networks:
+      - edge
+      - private
+    volumes:
+      - myst-data:/var/lib/mysterium-node
+      # The identity is seeded read-only into the node's keystore. The node
+      # never writes it, and the passphrase is never given to this container.
+      - ${MYST_IDENTITY_FILE:?set MYST_IDENTITY_FILE in .env}:/var/lib/mysterium-node/keystore/identity.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:4050/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # The relay: fixed ports, fail-closed.
+  relay:
+    build:
+      context: ./relay
+      args:
+        VERSION: ${RELAY_VERSION:-dev}
+    image: myst-relay/relay:${RELAY_VERSION:-dev}
+    container_name: myst-relay
+    restart: unless-stopped
+    # The relay drops to an unprivileged uid, which must be able to read the
+    # read-only identity mount. Default to the desktop user; `make doctor`
+    # checks it against the file's real owner.
+    user: "${RELAY_UID:-1000}:${RELAY_GID:-1000}"
+    depends_on:
+      myst:
+        condition: service_healthy
+    networks:
+      - private
+      - publish
+    ports:
+      - "${RELAY_BIND:-127.0.0.1}:${RELAY_SOCKS_PORT:-1080}:1080"
+      - "${RELAY_BIND:-127.0.0.1}:${RELAY_HTTP_PORT:-8080}:8080"
+      - "${RELAY_BIND:-127.0.0.1}:${RELAY_RAW_PORT:-1090}:1090"
+      - "${RELAY_BIND:-127.0.0.1}:${RELAY_HEALTH_PORT:-9090}:9090"
+    volumes:
+      - ${MYST_IDENTITY_FILE:?set MYST_IDENTITY_FILE in .env}:/run/secrets/identity.json:ro
+    environment:
+      MYST_IDENTITY_FILE: /run/secrets/identity.json
+      MYST_IDENTITY_PASSPHRASE: ${MYST_IDENTITY_PASSPHRASE?set MYST_IDENTITY_PASSPHRASE in .env (an empty value is valid)}
+      MYST_TEQUILAPI_URL: http://myst:4050
+      MYST_TEQUILAPI_USER: ${MYST_TEQUILAPI_USER:-myst}
+      MYST_TEQUILAPI_PASS: ${MYST_TEQUILAPI_PASS:-mystberry}
+      MYST_PROXY_HOST: myst
+      MYST_PROXY_PORT: ${MYST_PROXY_PORT:-40000}
+
+      # Container-side ports are fixed; the host-side numbers above are what a
+      # user changes.
+      RELAY_SOCKS_LISTEN: 0.0.0.0:1080
+      RELAY_HTTP_LISTEN: 0.0.0.0:8080
+      RELAY_RAW_LISTEN: ${RELAY_RAW_TARGET:+0.0.0.0:1090}
+      RELAY_RAW_TARGET: ${RELAY_RAW_TARGET:-}
+      RELAY_RAW_FORWARDS: ${RELAY_RAW_FORWARDS:-}
+      RELAY_HEALTH_LISTEN: 0.0.0.0:9090
+
+      RELAY_PROXY_USER: ${RELAY_PROXY_USER:-}
+      RELAY_PROXY_PASS: ${RELAY_PROXY_PASS:-}
+      RELAY_KILLSWITCH_STRICT: ${RELAY_KILLSWITCH_STRICT:-true}
+      RELAY_DIAL_TIMEOUT: ${RELAY_DIAL_TIMEOUT:-30s}
+      RELAY_IDLE_TIMEOUT: ${RELAY_IDLE_TIMEOUT:-0}
+      RELAY_ROTATE_EVERY: ${RELAY_ROTATE_EVERY:-0}
+      RELAY_DNS_MODE: ${RELAY_DNS_MODE:-provider}
+      RELAY_EXIT_CHECK_URL: ${RELAY_EXIT_CHECK_URL-https://api.ipify.org}
+      RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
+
+      EXIT_PROVIDER_ID: ${EXIT_PROVIDER_ID:-}
+      EXIT_COUNTRY: ${EXIT_COUNTRY:-}
+      EXIT_IP_TYPE: ${EXIT_IP_TYPE:-}
+      EXIT_SERVICE_TYPE: ${EXIT_SERVICE_TYPE:-wireguard}
+      EXIT_MIN_QUALITY: ${EXIT_MIN_QUALITY:-1.0}
+      EXIT_MAX_LATENCY: ${EXIT_MAX_LATENCY:-0}
+      EXIT_EXCLUDE_PROVIDERS: ${EXIT_EXCLUDE_PROVIDERS:-}
+    healthcheck:
+      test: ["CMD", "/mystrelay", "-healthcheck"]
+      interval: 15s
+      timeout: 8s
+      retries: 4
+      start_period: 180s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

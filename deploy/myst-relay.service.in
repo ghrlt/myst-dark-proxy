@@ -1,0 +1,32 @@
+[Unit]
+Description=myst-relay — fail-closed proxy relay over the Mysterium network
+Documentation=file://__WORKDIR__/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+# The stack cannot start before the filesystem holding it exists. If this
+# project lives on a partition that is not in /etc/fstab (an external disk, or
+# anything auto-mounted under /run/media at login) the unit will keep retrying
+# until the mount appears rather than failing once at boot and staying dead.
+RequiresMountsFor=__WORKDIR__
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__WORKDIR__
+Environment=COMPOSE_PROJECT_NAME=myst-relay
+
+# Bring the stack up and leave it running. Docker's own restart policy
+# (unless-stopped) keeps the containers alive; this unit exists so the stack
+# comes back after a reboot and can be managed with systemctl.
+ExecStart=__DOCKER__ compose up -d --remove-orphans
+ExecStop=__DOCKER__ compose down
+ExecReload=__DOCKER__ compose up -d --force-recreate
+
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
