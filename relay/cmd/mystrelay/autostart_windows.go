@@ -241,3 +241,13 @@ func autostartStatus() (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// restartHint is what to type to put a newly installed binary into service.
+// The scheduler owns the process when autostart is registered, so stopping the
+// task and starting it again is the whole of it.
+func restartHint() string {
+	if taskExists() {
+		return "  schtasks /end /tn " + taskName + "\n  schtasks /run /tn " + taskName
+	}
+	return "  stop it where it is running, then: " + exeName() + " run"
+}

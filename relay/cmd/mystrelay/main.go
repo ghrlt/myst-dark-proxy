@@ -39,6 +39,7 @@ import (
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/gate"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/health"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/node"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/selfupdate"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tequilapi"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel/myst"
@@ -58,6 +59,7 @@ commands:
   verify       Prove traffic leaves through the exit node, and that it stops
                when the tunnel does
   autostart    install | remove | status
+  update       Check for a newer release and install it over this binary
   version      Print the version
 
 Run "mystrelay <command> -h" for a command's flags.
@@ -89,6 +91,8 @@ func main() {
 		err = cmdVerify(args)
 	case "autostart":
 		err = cmdAutostart(args)
+	case "update":
+		err = cmdUpdate(args)
 	case "version":
 		fmt.Printf("myst-relay %s (node %s, %s)\n", version, node.DefaultVersion, node.Platform())
 	case "help", "-h", "--help":
@@ -99,6 +103,10 @@ func main() {
 		os.Exit(2)
 	}
 
+	var status statusExit
+	if errors.As(err, &status) {
+		os.Exit(int(status))
+	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "error: "+err.Error())
 		os.Exit(1)
@@ -106,6 +114,13 @@ func main() {
 }
 
 func isFlag(s string) bool { return len(s) > 0 && s[0] == '-' }
+
+// statusExit ends the process with a particular status and prints nothing: the
+// command has already said what happened. "update -check" reports an available
+// update this way, which is a finding rather than a failure.
+type statusExit int
+
+func (c statusExit) Error() string { return fmt.Sprintf("exit status %d", int(c)) }
 
 // loadConfig reads the config file, then the environment.
 func loadConfig(explicit string) (*config.Config, error) {
@@ -128,6 +143,11 @@ func cmdRun(args []string) error {
 	cfgPath := fs.String("config", "", "path to config.env")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// An update on Windows cannot delete the binary it replaced - it was the
+	// running image at the time. This is a later start, so it can.
+	if exe, err := selfupdate.Running(); err == nil {
+		selfupdate.CleanOld(exe)
 	}
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {

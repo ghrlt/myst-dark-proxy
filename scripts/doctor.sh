@@ -5,6 +5,10 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
+# Read early as well as in the Configuration section below: the image probe
+# further down has to pull the tag this deployment would actually use.
+[ -f .env ] && { set -a; . ./.env 2>/dev/null; set +a; }
+
 PASS=0
 FAIL=0
 WARN=0
@@ -44,7 +48,7 @@ fi
 if docker info >/dev/null 2>&1; then
   # --entrypoint is required: the image's entrypoint hands its arguments to
   # myst, so without it this runs the node instead of a shell and always fails.
-  if docker run --rm --network bridge --entrypoint sh mysteriumnetwork/myst:latest \
+  if docker run --rm --network bridge --entrypoint sh "mysteriumnetwork/myst:${MYST_IMAGE_TAG:-latest}" \
        -c 'wget -q -T 10 -O /dev/null "https://discovery.mysterium.network/api/v4/proposals?service_type=wireguard"' >/dev/null 2>&1; then
     ok "containers can reach the Mysterium discovery API"
   else

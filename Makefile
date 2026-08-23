@@ -6,7 +6,7 @@ COMPOSE := docker compose
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help doctor up down restart logs status verify verify-kill test build fmt vet autostart autostart-off clean dist dist-windows dist-linux
+.PHONY: help doctor up down restart logs status verify verify-kill test build fmt vet update update-check autostart autostart-off clean dist dist-windows dist-linux
 
 help: ## Show this help
 	@printf '\nmyst-relay - fail-closed proxy relay over the Mysterium network\n\n'
@@ -41,6 +41,12 @@ verify: ## Prove traffic egresses through the exit node
 
 verify-kill: ## Also drop the tunnel and prove traffic stops
 	@scripts/verify.sh --kill
+
+update: ## Pull a newer node image, rebuild the relay, recreate what changed
+	@scripts/update.sh
+
+update-check: ## Report what could be updated, and change nothing
+	@scripts/update.sh --check
 
 test: ## Run the relay unit tests
 	cd relay && go test ./...

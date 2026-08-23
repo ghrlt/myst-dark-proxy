@@ -35,6 +35,13 @@ services:
   # The image's own entrypoint supplies --config-dir/--data-dir/--runtime-dir
   # and then appends this command, so these are global flags followed by the
   # `daemon` subcommand.
+  #
+  # The tag is where this deployment's update policy lives. "latest" (the
+  # default) follows upstream and moves whenever "make update" pulls; a version
+  # tag - 1.39.5-alpine, the form upstream publishes, there is no bare 1.39.5 -
+  # never moves until MYST_IMAGE_TAG is edited. Pinning is worth it for a relay
+  # that must keep behaving exactly as it was verified to: the node's proxy mode
+  # is undocumented, so an upstream change can alter it without notice.
   myst:
     image: mysteriumnetwork/myst:${MYST_IMAGE_TAG:-latest}
     container_name: myst-relay-node

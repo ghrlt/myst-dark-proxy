@@ -203,11 +203,12 @@ Setup complete.
   start it now      %s run
   check it          %s status
   prove it works    %s verify
+  keep it current   %s update
 
 Point your applications at:
   SOCKS5   127.0.0.1:%d      (prefer this; DNS resolves at the exit)
   HTTP     127.0.0.1:%d
-`, exeName(), exeName(), exeName(), *socksPort, *httpPort)
+`, exeName(), exeName(), exeName(), exeName(), *socksPort, *httpPort)
 	if choice != "none" {
 		fmt.Printf("\nIt will also start automatically at %s.\n", choice)
 	}
@@ -248,9 +249,12 @@ func configFile(v configValues) string {
 	w("")
 	w("# The node is downloaded, started and supervised by the relay itself.")
 	w("MYST_MANAGED=true")
-	w("MYST_NODE_VERSION=%s", node.DefaultVersion)
 	w("MYST_NODE_DIR=%s", filepath.Join(v.AppDir, "node"))
 	w("MYST_NODE_DATA_DIR=%s", filepath.Join(v.AppDir, "node-data"))
+	w("# The node version follows the relay, which carries the checksum it is")
+	w("# tested against - %s in this build. Uncomment to hold a different one,", node.DefaultVersion)
+	w("# remembering that an update then leaves it where it is.")
+	w("# MYST_NODE_VERSION=%s", node.DefaultVersion)
 	w("")
 	w("# Identity. The file is a copy; the original is not touched.")
 	w("MYST_IDENTITY_FILE=%s", v.Identity)

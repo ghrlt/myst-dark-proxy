@@ -95,3 +95,14 @@ func userConfigHome() string {
 	}
 	return filepath.Join(home, ".config")
 }
+
+// restartHint is what to type to put a newly installed binary into service.
+func restartHint() string {
+	if _, err := os.Stat(filepath.Join(userConfigHome(), "systemd", "user", taskName+".service")); err == nil {
+		return "  systemctl --user restart " + taskName
+	}
+	if _, err := os.Stat("/etc/systemd/system/" + taskName + ".service"); err == nil {
+		return "  sudo systemctl restart " + taskName
+	}
+	return "  stop it where it is running, then: " + exeName() + " run"
+}

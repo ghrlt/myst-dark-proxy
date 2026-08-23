@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/node"
 )
 
 // fileValues holds settings read from a config file. The environment always
@@ -136,7 +138,7 @@ type Config struct {
 	// This is how a desktop install works, where there is no container to run
 	// the node in.
 	Managed     bool
-	NodeVersion string
+	NodeVersion string // the node this build is tested against, unless pinned
 	NodeDir     string // where the node binary lives
 	NodeDataDir string // node config, keystore and database
 	TequilaHost string
@@ -182,7 +184,7 @@ func Load() (*Config, error) {
 		ProxyPort:      envInt("MYST_PROXY_PORT", 40000),
 
 		Managed:     envBool("MYST_MANAGED", runtime.GOOS == "windows"),
-		NodeVersion: env("MYST_NODE_VERSION", "1.39.5"),
+		NodeVersion: env("MYST_NODE_VERSION", node.DefaultVersion),
 		TequilaHost: env("MYST_TEQUILAPI_HOST", "127.0.0.1"),
 		TequilaPort: envInt("MYST_TEQUILAPI_PORT", 4050),
 

@@ -8,6 +8,7 @@ mystrelay.exe setup     configure, fetch the node, register autostart
 mystrelay.exe run       run it
 mystrelay.exe status    what it is doing right now
 mystrelay.exe verify    prove traffic leaves through the exit, not through you
+mystrelay.exe update    check for a newer release and install it over itself
 ```
 
 ## 1. Install
@@ -198,7 +199,48 @@ RELAY_ON_DEMAND=false
 RELAY_SESSION_IDLE_TIMEOUT=0
 ```
 
-## 8. Troubleshooting
+## 8. Keeping it up to date
+
+```
+mystrelay.exe update -check    is there a newer release?
+mystrelay.exe update           download it, check it, install it over this one
+```
+
+Nothing checks on its own. A relay that is carrying traffic makes no request of
+its own making, so the only thing that ever tells GitHub this machine exists is
+you running the command above. The cost of that is that being out of date is
+never noticed for you; if you would rather it were, `update -check` exits with
+status 10 when a release is newer, which is enough for a scheduled task:
+
+```
+schtasks /create /tn myst-relay-update-check /sc weekly ^
+  /tr "\"%LOCALAPPDATA%\myst-relay\mystrelay.exe\" update -check"
+```
+
+Task Scheduler keeps that code as the task's *Last Run Result*, where `0xA` is
+"a newer release is published" and `0x0` is "nothing to do".
+
+What `update` does, in order: read the newest release, download the binary for
+this platform, check it against the `SHA256SUMS` published with the release, run
+it once to confirm it works, and only then put it in place of the running
+executable. If any step fails, nothing is replaced and the old binary is still
+the one on disk.
+
+Windows will not delete a running program, so the old one is renamed to
+`mystrelay.exe.old` and deleted at the next start. That also means **the relay
+already running is still the old version** - the command prints the two lines
+that restart the scheduled task.
+
+The Mysterium node follows the relay: each build carries the checksum of the
+node release it was tested against and installs that at the next start. A
+`MYST_NODE_VERSION` line in `config.env` overrides this and holds the node where
+it is; `update` says so if it finds one.
+
+Other flags: `-to v0.3.0` installs a named release, `-force` reinstalls the
+current one, and `-via-relay` fetches through the running relay, so the download
+leaves from the exit node rather than from your own address.
+
+## 9. Troubleshooting
 
 **Nothing loads and `status` says the relay is not running** - check
 `%LOCALAPPDATA%\myst-relay\logs\relay.log`. Run `mystrelay.exe run` in a
@@ -235,7 +277,7 @@ prompt, re-registering once gives you a task that is yours alone.
 in `config.env` and restart. `EXIT_IP_TYPE=residential` also helps against sites
 that block hosting ranges.
 
-## 9. Uninstall
+## 10. Uninstall
 
 ```
 mystrelay.exe autostart remove

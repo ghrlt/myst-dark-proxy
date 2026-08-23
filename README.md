@@ -81,6 +81,7 @@ registry keys, no firewall rules.
 mystrelay.exe run       # run it
 mystrelay.exe status    # what it is doing right now
 mystrelay.exe verify    # prove traffic leaves through the exit, not through you
+mystrelay.exe update    # check for a newer release and install it over itself
 
 mystrelay.exe autostart install -scope logon   # at sign-in, as you (no admin)
 mystrelay.exe autostart install -scope boot    # before sign-in, as SYSTEM (admin)
@@ -103,6 +104,7 @@ make doctor               # preflight; prints the fix for anything that fails
 make up
 make verify               # proves traffic egresses somewhere that is not you
 make autostart            # start at boot (systemd)
+make update               # pull a newer node image and rebuild the relay
 ```
 
 The node and the relay run as separate containers. The relay reaches the node
@@ -176,6 +178,64 @@ wins). Full annotated list in [`.env.example`](.env.example).
 | `EXIT_PROVIDER_ID` | pin one provider, ignoring the filters |
 | `RELAY_ROTATE_EVERY` | change exit on a timer |
 | `RELAY_EXIT_CHECK_URL` | the egress proof; empty disables it (see caveats) |
+| `MYST_IMAGE_TAG` / `MYST_NODE_VERSION` | pin the node - an image tag under Docker, a release version natively (see [Keeping it current](#keeping-it-current)) |
+
+## Keeping it current
+
+Two things move independently: this relay, and the Mysterium node it drives.
+Neither updates itself. Nothing here contacts anything on its own - a relay
+carrying traffic makes no request of its own making - so being out of date is
+never noticed for you either. The commands below are the whole mechanism.
+
+### The executable updates itself
+
+```powershell
+mystrelay.exe update -check   # is there a newer release? exit status 10 if so
+mystrelay.exe update          # download, verify, install over this binary
+```
+
+In order: read the newest release, download the asset for this platform, check
+it against the `SHA256SUMS` published beside it, **run it once** to confirm it
+works, and only then move it over the running executable. A failure at any step
+leaves the working binary exactly where it was. That checksum catches a
+truncated or corrupted transfer, not a compromised release - the digest ships
+with the file it describes - so TLS to GitHub is what says the release is this
+project's.
+
+Windows cannot delete a running program, so its predecessor is renamed to
+`mystrelay.exe.old` and removed at the next start. Either way the relay
+*already running* is still the old version until it is restarted; the command
+prints how.
+
+The node version follows the relay: each build carries the checksum of the node
+release it was tested against and fetches it at the next start. A
+`MYST_NODE_VERSION` line in `config.env` overrides that and holds the node where
+it is - `update` says so when it finds one.
+
+`-to v0.3.0` installs a named release, `-force` reinstalls the current one, and
+`-via-relay` fetches through the running relay, so the request leaves from the
+exit node instead of from this machine.
+
+### Docker updates by tag
+
+The relay image is built from this checkout, so it moves when you `git pull`.
+The node image comes from upstream, and `MYST_IMAGE_TAG` is the whole policy:
+
+| | |
+|---|---|
+| unset, or `latest` | follows upstream; `make update` pulls whatever is newest |
+| `1.39.5-alpine` | pinned; nothing moves until you edit `.env` |
+
+```bash
+make update-check   # what has moved: the node image, this checkout vs releases
+make update         # pull, rebuild, recreate what changed
+```
+
+Upstream tags releases with an `-alpine` suffix and publishes no bare number, so
+`1.39.5-alpine` is a tag and `1.39.5` is not. Pinning is the safer setting for a
+relay whose behaviour you have verified: proxy mode is undocumented, and an
+upstream release can change it without saying so. Run `make verify` after an
+update - that is the check that it did not.
 
 ## Kill switch
 
@@ -269,7 +329,8 @@ RELAY_SESSION_IDLE_TIMEOUT=0     # and never close it
   what they cost](#sessions-and-what-they-cost). An empty identity means no
   tunnel, and the relay refuses to start.
 - **The Windows binary is unsigned** - SmartScreen will warn. Verify the SHA-256
-  published with the release.
+  published with the release; `mystrelay.exe update` makes that check itself,
+  every time.
 - **One session at a time.** The `tunnel.Tunnel` interface admits a pool of
   several, but the shipped configuration runs one.
 
@@ -284,7 +345,8 @@ make test vet
 
 Layout: `internal/tunnel` is the egress interface (`internal/tunnel/myst`
 implements it), `internal/frontend` the listeners, `internal/gate` the kill
-switch, `internal/node` the managed-node fetcher and supervisor. Adding an
+switch, `internal/node` the managed-node fetcher and supervisor,
+`internal/selfupdate` the release check and the in-place install. Adding an
 egress kind or a frontend protocol touches nothing else.
 
 ## Licence
