@@ -57,9 +57,16 @@ mystrelay.exe autostart status
 mystrelay.exe autostart remove
 ```
 
-Both register a Scheduled Task named `myst-relay`. The logon task launches the
-relay hidden, so no console window sits on your desktop; check `logs\relay.log`
-to see what it is doing.
+Both register a Scheduled Task named `myst-relay`.
+
+The **logon** task is registered against your account alone: it triggers at your
+sign-in and runs as you, so an ordinary terminal is all it takes. It launches
+the relay hidden, so no console window sits on your desktop; check
+`logs\relay.log` to see what it is doing.
+
+The **boot** task runs as the system account before anyone signs in. Only an
+administrator can register that, so open the terminal with *Run as
+administrator* for it - and for removing it again later.
 
 Pick **logon** unless something that runs before you sign in needs the proxy.
 
@@ -213,6 +220,16 @@ connection opens one.
 **The first page after a pause takes ten seconds or so** - that is a session
 being opened for it; see section 7. Raise `RELAY_SESSION_IDLE_TIMEOUT` if the
 pauses in your day are longer than the timeout, or turn the behaviour off.
+
+**Autostart is refused with "access is denied"** (in whatever language Windows
+was installed in) - the boot scope needs a terminal opened with *Run as
+administrator*; the logon scope does not. If the logon scope is refused, a
+`myst-relay` task left by an earlier build is in the way: remove it from an
+administrator prompt with `mystrelay.exe autostart remove`, then register it
+again as yourself. Those builds registered the logon task without naming an
+account, which Windows reads as "at the logon of anyone" and will not create
+for a non-administrator. If you worked around that with an administrator
+prompt, re-registering once gives you a task that is yours alone.
 
 **It picked a slow country** - set `EXIT_COUNTRY=NL,DE` (or whatever you prefer)
 in `config.env` and restart. `EXIT_IP_TYPE=residential` also helps against sites
