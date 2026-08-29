@@ -99,6 +99,12 @@ it is doing at a glance - green carrying, blue resting between clients, amber
 building a session, red refusing, grey not running. `-tray=false` on the
 autostart command goes back to launching the relay alone.
 
+An autostart registration made before v0.5.0 has no icon in it, and updating
+the binary does not change what an already registered task runs. The relay
+notices that on its next start and adds the icon to its own registration, so
+this is nothing to do by hand; `autostart status` says which of the two is
+registered.
+
 The same icon runs on Linux: `mystrelay tray`, spoken as StatusNotifierItem
 over D-Bus, which is what XFCE, KDE and GNOME-with-an-extension listen for.
 There the systemd user unit keeps the relay and the icon attaches to it, and

@@ -5,6 +5,8 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
@@ -17,6 +19,19 @@ import (
 
 func defaultConfigPath() string  { return config.ConfigPath() }
 func appDirOf(cfg string) string { return filepath.Dir(cfg) }
+
+// The task's description says what it starts. Task Scheduler shows it in its
+// own list, where "myst-relay" alone tells an owner nothing - and it is also
+// how a registration is dated: one that says none of these was written before
+// there was a status icon to start, and legacyDescription is what every build
+// up to v0.5.0 wrote instead.
+const (
+	descIconLogon  = "myst-relay - the status icon at sign-in, and the relay behind it"
+	descRelayLogon = "myst-relay - the relay at sign-in, without the status icon"
+	descRelayBoot  = "myst-relay - the relay at startup, before anyone signs in"
+
+	legacyDescription = "myst-relay - fail-closed proxy relay over the Mysterium network"
+)
 
 // installAutostart registers a Scheduled Task from an XML definition rather
 // than from schtasks flags.
@@ -32,7 +47,7 @@ func appDirOf(cfg string) string { return filepath.Dir(cfg) }
 // no three-day execution limit, and no refusing to start because a laptop
 // happens to be on battery.
 func installAutostart(o autostartOptions) error {
-	var trigger, principal, restart, action string
+	var trigger, principal, restart, action, description string
 
 	switch o.Scope {
 	case "logon":
@@ -50,6 +65,10 @@ func installAutostart(o autostartOptions) error {
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>`, esc(who))
 		action = hiddenLaunch(o)
+		description = descRelayLogon
+		if o.Tray {
+			description = descIconLogon
+		}
 
 	case "boot":
 		trigger = `    <BootTrigger>
@@ -69,6 +88,7 @@ func installAutostart(o autostartOptions) error {
       <Count>99</Count>
     </RestartOnFailure>`
 		action = directLaunch(o)
+		description = descRelayBoot
 
 	default:
 		return fmt.Errorf("scope must be logon or boot, got %q", o.Scope)
@@ -78,7 +98,7 @@ func installAutostart(o autostartOptions) error {
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <URI>\%s</URI>
-    <Description>myst-relay - fail-closed proxy relay over the Mysterium network</Description>
+    <Description>%s</Description>
   </RegistrationInfo>
   <Triggers>
 %s
@@ -108,7 +128,7 @@ func installAutostart(o autostartOptions) error {
   <Actions Context="Author">
 %s
   </Actions>
-</Task>`, taskName, trigger, principal, restart, action)
+</Task>`, taskName, esc(description), trigger, principal, restart, action)
 
 	path, err := writeTaskXML(doc)
 	if err != nil {
@@ -232,6 +252,133 @@ func taskExists() bool {
 	return exec.Command("schtasks", "/query", "/tn", taskName).Run() == nil
 }
 
+// registration is the part of a registered task worth reading back.
+type registration struct {
+	Description string   `xml:"RegistrationInfo>Description"`
+	LogonUsers  []string `xml:"Triggers>LogonTrigger>UserId"`
+	Arguments   []string `xml:"Actions>Exec>Arguments"`
+}
+
+// readTask returns what is registered under our name, if anything is.
+func readTask() (registration, bool) {
+	out, err := exec.Command("schtasks", "/query", "/tn", taskName, "/xml", "ONELINE").Output()
+	if err != nil {
+		return registration{}, false
+	}
+	dec := xml.NewDecoder(strings.NewReader(decodeTaskXML(out)))
+	// The declaration says UTF-16 because that is what schtasks exports;
+	// decodeTaskXML has already turned the bytes into text, so the reader is
+	// handed straight back rather than converted a second time.
+	dec.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
+	var reg registration
+	if err := dec.Decode(&reg); err != nil {
+		return registration{}, false
+	}
+	return reg, true
+}
+
+// decodeTaskXML turns what schtasks printed into text. It exports UTF-16 with a
+// byte order mark; older builds and some locales print plain bytes instead, so
+// both are accepted.
+func decodeTaskXML(out []byte) string {
+	if len(out) < 2 || out[0] != 0xFF || out[1] != 0xFE {
+		return string(out)
+	}
+	units := make([]uint16, 0, (len(out)-2)/2)
+	for i := 2; i+1 < len(out); i += 2 {
+		units = append(units, uint16(out[i])|uint16(out[i+1])<<8)
+	}
+	return string(utf16.Decode(units))
+}
+
+// adoptStatusIcon puts the notification-area icon into a registration made
+// before there was one.
+//
+// Every build up to v0.5.0 registered a sign-in task that launches the relay
+// directly, because there was no icon to launch instead. Replacing the binary
+// leaves that task exactly as it was, so a machine that has been running the
+// relay since before the icon existed would sign in to no icon for ever -
+// which is the whole of what its owner sees of this feature, and not something
+// they can be expected to know to go and fix by hand. So the relay fixes it
+// itself, once, on a start where it can see that this is what happened.
+//
+// It is deliberately narrow, because rewriting the machine's own registration
+// is not a thing to do on a guess. Only a sign-in task is touched: a boot task
+// needs an administrator and has no desktop to draw on anyway. Only one whose
+// action names this very executable, so a relay run by hand from a download
+// folder cannot point the registration at itself. And only one whose
+// description shows it was written before the icon existed, so that
+// "autostart install -tray=false" - which writes a description saying exactly
+// that - is a choice that stands. The one gap is a task registered by v0.5.0
+// itself with -tray=false: it describes itself the old way, and so gains an
+// icon it was told to do without, once.
+func adoptStatusIcon(log *slog.Logger) {
+	reg, ok := readTask()
+	if !ok || len(reg.LogonUsers) == 0 || reg.Description != legacyDescription {
+		return
+	}
+	action := strings.Join(reg.Arguments, " ")
+	if !strings.Contains(action, "run -config") || strings.Contains(action, "tray -config") {
+		return
+	}
+	// The launcher is written from two quoted strings and reads back as three:
+	// the executable, the verb, and the config path it is given.
+	quoted := psQuoted(action)
+	if len(quoted) < 3 {
+		return
+	}
+	exe, cfgPath := quoted[0], quoted[len(quoted)-1]
+	if self, err := os.Executable(); err != nil || !samePath(self, exe) {
+		return
+	}
+	if err := installAutostart(autostartOptions{
+		Scope:      "logon",
+		Executable: exe,
+		ConfigPath: cfgPath,
+		AppDir:     appDirOf(cfgPath),
+		Tray:       true,
+	}); err != nil {
+		log.Warn("could not add the status icon to the sign-in task", "task", taskName, "error", err)
+		return
+	}
+	log.Info("the sign-in task now starts the status icon, and the icon starts the relay",
+		"task", taskName, "icon_from", "the next sign-in, or "+exeName()+" tray")
+}
+
+// psQuoted returns the single-quoted strings in a PowerShell command line, in
+// order, undoing the doubling that quotes a quote. It is the reverse of how
+// hiddenLaunch writes the paths into the action, and so the way to read back
+// what an already registered task was told to start.
+func psQuoted(s string) []string {
+	var out []string
+	for i := 0; i < len(s); {
+		if s[i] != '\'' {
+			i++
+			continue
+		}
+		var b strings.Builder
+		for i++; i < len(s); i++ {
+			if s[i] != '\'' {
+				b.WriteByte(s[i])
+				continue
+			}
+			if i+1 >= len(s) || s[i+1] != '\'' {
+				i++
+				break
+			}
+			b.WriteByte('\'')
+			i++
+		}
+		out = append(out, b.String())
+	}
+	return out
+}
+
+// samePath compares two Windows paths as Windows does.
+func samePath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
 func removeAutostart() error {
 	if !taskExists() {
 		return nil
@@ -249,7 +396,25 @@ func autostartStatus() (string, error) {
 	if err != nil {
 		return fmt.Sprintf("not installed. Register it with: %s autostart install -scope logon", exeName()), nil
 	}
-	return strings.TrimSpace(string(out)), nil
+	// What it starts is the question people actually have, and the task listing
+	// answers it only in a command line long enough to hide the answer.
+	lead := ""
+	if reg, ok := readTask(); ok {
+		switch reg.Description {
+		case descIconLogon:
+			lead = "starts: the status icon, and the icon starts the relay\n\n"
+		case descRelayLogon:
+			lead = fmt.Sprintf("starts: the relay alone, with no status icon\n"+
+				"        put one there with \"%s autostart install\"\n\n", exeName())
+		case descRelayBoot:
+			lead = "starts: the relay as the system account, before anyone signs in\n\n"
+		case legacyDescription:
+			lead = fmt.Sprintf("starts: the relay alone - this task was registered before the status\n"+
+				"        icon existed. \"%s autostart install\" adds it, and so does\n"+
+				"        the next start of the relay itself.\n\n", exeName())
+		}
+	}
+	return lead + strings.TrimSpace(string(out)), nil
 }
 
 // restartHint is what to type to put a newly installed binary into service.

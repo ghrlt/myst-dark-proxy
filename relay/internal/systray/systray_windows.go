@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 )
@@ -69,6 +70,7 @@ const (
 	wmRefresh      = wmApp + 2 // "re-read the wanted icon", from any goroutine
 	wmBalloon      = wmApp + 3 // "show the queued balloon"
 	wmTeardown     = wmApp + 4 // "take the icon down and stop"
+	wmRetryAdd     = wmApp + 5 // "the shell would not take the icon; try again"
 
 	nimAdd    = 0x0
 	nimModify = 0x1
@@ -222,6 +224,13 @@ func (t *Tray) Notify(title, body string, warning bool) {
 // Quit takes the icon down and ends Run.
 func (t *Tray) Quit() { t.post(wmTeardown) }
 
+// queued reports whether anything is waiting to be said.
+func (t *Tray) queued() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.balloons) > 0
+}
+
 func (t *Tray) post(message uint32) {
 	if t.hwnd != 0 {
 		procPostMessage.Call(t.hwnd, uintptr(message), 0, 0)
@@ -281,6 +290,11 @@ type runState struct {
 	// on every status poll would leak them by the thousand.
 	icons map[Colour]uintptr
 	data  notifyIconData
+	// added is whether the shell currently has the icon. Until it does there
+	// is nothing to modify and no balloon to hang anywhere, and attempt counts
+	// how many times it has been offered one.
+	added   bool
+	attempt int
 }
 
 // Run puts the icon up and pumps its messages until Quit is called.
@@ -405,7 +419,12 @@ func wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
 		state.showBalloon()
 		return 0
 
+	case wmRetryAdd:
+		state.apply(nimAdd)
+		return 0
+
 	case wmTeardown, wmClose:
+		state.added = false
 		procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&state.data)))
 		procDestroyWindow.Call(hwnd)
 		return 0
@@ -417,6 +436,7 @@ func wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
 
 	// Explorer restarted and took every icon with it; put ours back.
 	if taskbarCreated != 0 && uint32(message) == taskbarCreated {
+		state.added, state.attempt = false, 0
 		state.apply(nimAdd)
 		return 0
 	}
@@ -426,6 +446,9 @@ func wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
 }
 
 // apply pushes the wanted colour and tooltip into the notification area.
+//
+// The operation asked for is what to do to an icon the shell already has;
+// while it has none, every call is an add.
 func (s *runState) apply(operation uintptr) {
 	s.tray.mu.Lock()
 	colour, tooltip := s.tray.colour, s.tray.tooltip
@@ -443,11 +466,71 @@ func (s *runState) apply(operation uintptr) {
 	s.data.Flags = nifMessage | nifIcon | nifTip
 	s.data.Icon = icon
 	putUTF16(s.data.Tip[:], tooltip, maxTipChars)
-	procShellNotifyIcon.Call(operation, uintptr(unsafe.Pointer(&s.data)))
+	if !s.added {
+		operation = nimAdd
+	}
+	done, _, _ := procShellNotifyIcon.Call(operation, uintptr(unsafe.Pointer(&s.data)))
+
+	// The answer is worth reading. It is how a shell that is not ready says
+	// so, and the difference between an icon that turns up a moment late and
+	// one that never turns up at all.
+	if s.added = done != 0; !s.added {
+		s.retryAdd()
+		return
+	}
+	s.attempt = 0
+	// Anything said while there was nowhere to say it is still queued.
+	if s.tray.queued() {
+		s.tray.post(wmBalloon)
+	}
+}
+
+const (
+	// addAttempts, addRetryEvery and addRetryMax bound the wait for a shell
+	// that is not listening yet: the last attempt falls a little over four
+	// minutes after the first. Long enough for a slow sign-in, and short
+	// enough that a refusal for some other reason gives up rather than asking
+	// for the rest of the session.
+	addAttempts   = 20
+	addRetryEvery = 2 * time.Second
+	addRetryMax   = 15 * time.Second
+)
+
+// retryAdd asks for another go at putting the icon up, after a pause.
+//
+// The notification area is not there for the whole of a sign-in. A task with a
+// logon trigger routinely starts before Explorer has finished building the
+// taskbar, and Shell_NotifyIcon against a shell that is not listening yet
+// simply answers false. TaskbarCreated covers Explorer restarting later but
+// not this: a broadcast reaches the windows that exist when it is sent, so a
+// window created moments after Explorer sent it - and moments before the tray
+// would have accepted an icon - hears nothing, and sits there iconless for the
+// rest of the session. Which is exactly what an autostarted relay looked like,
+// while the same binary started by hand had an icon every time.
+//
+// The wait happens on a goroutine of its own because the thread that would
+// otherwise do the waiting is the one pumping the window's messages: an icon
+// that is late is a nuisance, but a menu that does not open is a broken one.
+func (s *runState) retryAdd() {
+	if s.attempt >= addAttempts {
+		return
+	}
+	s.attempt++
+	wait := min(time.Duration(s.attempt)*addRetryEvery, addRetryMax)
+	hwnd := s.data.Wnd
+	go func() {
+		time.Sleep(wait)
+		procPostMessage.Call(hwnd, wmRetryAdd, 0, 0)
+	}()
 }
 
 // showBalloon raises the oldest queued balloon.
 func (s *runState) showBalloon() {
+	// With no icon there is nothing for one to appear over. Leave it queued:
+	// the add that succeeds asks for it again.
+	if !s.added {
+		return
+	}
 	s.tray.mu.Lock()
 	if len(s.tray.balloons) == 0 {
 		s.tray.mu.Unlock()

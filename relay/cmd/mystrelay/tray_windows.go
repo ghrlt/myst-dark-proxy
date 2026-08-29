@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
-	"unicode/utf16"
 )
 
 // The Windows half of the tray's platform seam: the scheduled task is the
@@ -30,15 +29,12 @@ func detachChild(cmd *exec.Cmd) {
 // task that starts the tray is not a lever for the relay: running it would put
 // a second icon on the panel.
 func supervisorRunsRelay() bool {
-	if !taskExists() {
+	reg, ok := readTask()
+	if !ok {
 		return false
 	}
-	out, err := exec.Command("schtasks", "/query", "/tn", taskName, "/xml", "ONELINE").Output()
-	if err != nil {
-		return false
-	}
-	doc := decodeTaskXML(out)
-	return strings.Contains(doc, "run -config") && !strings.Contains(doc, "tray -config")
+	action := strings.Join(reg.Arguments, " ")
+	return strings.Contains(action, "run -config") && !strings.Contains(action, "tray -config")
 }
 
 func supervisorStart() error {
@@ -50,18 +46,4 @@ func supervisorStart() error {
 // that instance is the relay itself.
 func supervisorStop() error {
 	return exec.Command("schtasks", "/end", "/tn", taskName).Run()
-}
-
-// decodeTaskXML turns what schtasks printed into text. It exports UTF-16 with a
-// byte order mark; older builds and some locales print plain bytes instead, so
-// both are accepted.
-func decodeTaskXML(out []byte) string {
-	if len(out) < 2 || out[0] != 0xFF || out[1] != 0xFE {
-		return string(out)
-	}
-	units := make([]uint16, 0, (len(out)-2)/2)
-	for i := 2; i+1 < len(out); i += 2 {
-		units = append(units, uint16(out[i])|uint16(out[i+1])<<8)
-	}
-	return string(utf16.Decode(units))
 }

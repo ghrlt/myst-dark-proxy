@@ -74,6 +74,14 @@ detail.
 Add `-tray=false` to launch the relay on its own instead, the way earlier
 versions did.
 
+A task registered by a version before v0.5.0 launches the relay on its own,
+because there was no icon to launch then, and updating the binary does not
+change what a registered task runs. Nothing needs doing about that: the next
+time the relay starts it notices, and puts the icon into its own registration -
+from then on, sign-in starts the icon. `autostart status` says which of the two
+is registered, and `autostart install` is the way to do it now rather than at
+the next start.
+
 The **boot** task runs as the system account before anyone signs in. Only an
 administrator can register that, so open the terminal with *Run as
 administrator* for it - and for removing it again later.
@@ -96,6 +104,13 @@ traffic going through the exit right now?" without opening anything:
 | amber | building a session |
 | red | refusing traffic - the tunnel is down and the kill switch is shut |
 | grey | no relay is running |
+
+**Where it is the first time.** Windows puts an icon it has not seen before
+behind the `^` chevron rather than on the taskbar itself, so the first one is
+usually one click away. Drag it out of that flyout onto the taskbar and Windows
+remembers, or use Settings > Personalisation > Taskbar > Other system tray
+icons. At sign-in it can also be a few seconds late: the icon waits for the
+taskbar to be ready to take it, however long Explorer takes to get there.
 
 Hover for the same thing in words, with the exit address. Right-click for the
 menu:

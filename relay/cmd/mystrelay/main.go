@@ -183,6 +183,13 @@ func run(cfg *config.Config) error {
 		"kill_switch", killSwitchMode(cfg.StrictKillSwitch),
 		"sessions", sessionPolicy(cfg))
 
+	// An autostart registration written before the status icon existed still
+	// starts the relay and nothing else, and replacing the binary leaves it
+	// that way. This is where that is noticed and put right, on a goroutine
+	// because it asks the machine's scheduler and nothing below waits on the
+	// answer.
+	go adoptStatusIcon(log)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
