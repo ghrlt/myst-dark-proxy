@@ -166,14 +166,14 @@ func installRelease(ctx context.Context, releases *selfupdate.Client, rel *selfu
 
 	if staged {
 		keep = true
-		waiting := filepath.Join(filepath.Dir(tmp), "mystrelay-"+rel.Tag+exeSuffix())
+		waiting := filepath.Join(filepath.Dir(tmp), "mystrelay-"+rel.Tag+selfupdate.Ext())
 		if err := os.Rename(tmp, waiting); err == nil {
 			tmp = waiting
 		}
 		return fmt.Errorf("%s cannot be written by this account, so the new binary was not installed\n"+
 			"  it is verified and waiting at %s\n"+
-			"  put it in place with:  sudo install -m 0755 %s %s",
-			filepath.Dir(target), tmp, tmp, target)
+			"  put it in place with:\n    %s",
+			filepath.Dir(target), tmp, elevatedInstall(tmp, target))
 	}
 	if err := selfupdate.Replace(tmp, target); err != nil {
 		keep = true
@@ -183,6 +183,16 @@ func installRelease(ctx context.Context, releases *selfupdate.Client, rel *selfu
 
 	afterInstall(cfgPath, rel.Tag, nodeVersion)
 	return nil
+}
+
+// elevatedInstall is how to finish an install that needed a privilege this
+// account has not got. It differs by platform, and an instruction telling a
+// Windows owner to use sudo is no instruction at all.
+func elevatedInstall(src, target string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("copy /Y %q %q\n  from a terminal opened with \"Run as administrator\"", src, target)
+	}
+	return fmt.Sprintf("sudo install -m 0755 %s %s", src, target)
 }
 
 // afterInstall says what the new binary does not pick up by itself.
@@ -313,11 +323,4 @@ func inContainer() bool {
 		return true
 	}
 	return os.Getenv("container") != ""
-}
-
-func exeSuffix() string {
-	if runtime.GOOS == "windows" {
-		return ".exe"
-	}
-	return ""
 }

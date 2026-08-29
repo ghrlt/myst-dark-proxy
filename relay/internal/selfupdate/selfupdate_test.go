@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,6 +100,15 @@ func TestParseSums(t *testing.T) {
 	}
 }
 
+func TestExeExt(t *testing.T) {
+	if got := exeExt("windows"); got != ".exe" {
+		t.Errorf("exeExt(windows) = %q, and a name Windows will not run is a download that cannot be checked", got)
+	}
+	if got := exeExt("linux"); got != "" {
+		t.Errorf("exeExt(linux) = %q", got)
+	}
+}
+
 func TestAssetNames(t *testing.T) {
 	if got := AssetNames("windows", "amd64"); got[0] != "mystrelay_windows_amd64.exe" || got[1] != "mystrelay.exe" {
 		t.Errorf("windows/amd64 asset names = %v", got)
@@ -185,6 +195,11 @@ func TestLatestAndDownload(t *testing.T) {
 	}
 	if st, _ := os.Stat(path); st.Mode().Perm()&0o100 == 0 {
 		t.Errorf("the download is not executable: %v", st.Mode())
+	}
+	// Being executable is not enough on Windows, which reads the extension:
+	// the download is run once to prove it works before it replaces anything.
+	if !strings.HasSuffix(path, Ext()) {
+		t.Errorf("download %q does not end in %q", path, Ext())
 	}
 
 	// A digest that does not match must leave nothing behind.

@@ -151,6 +151,22 @@ func (v Version) String() string {
 
 // --- releases --------------------------------------------------------------
 
+// Ext is what an executable's name has to end in on this platform, and
+// exeExt is that rule for any platform.
+//
+// It is not decoration. A download is run once before it replaces anything,
+// and Windows decides whether a file may be executed from its extension: a
+// verified binary saved under a name ending in digits is refused by the very
+// check meant to prove it works, with "executable file not found in %PATH%".
+func Ext() string { return exeExt(runtime.GOOS) }
+
+func exeExt(goos string) string {
+	if goos == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
 // Release is one published release and the assets it carries.
 type Release struct {
 	Tag       string
@@ -167,10 +183,7 @@ func (r *Release) Version() Version { return Parse(r.Tag) }
 // amd64 alone; a platform-tagged name is preferred so that publishing other
 // architectures later cannot hand this one the wrong file.
 func AssetNames(goos, goarch string) []string {
-	ext := ""
-	if goos == "windows" {
-		ext = ".exe"
-	}
+	ext := exeExt(goos)
 	names := []string{fmt.Sprintf("mystrelay_%s_%s%s", goos, goarch, ext)}
 	if goarch == "amd64" {
 		names = append(names, "mystrelay"+ext)
@@ -289,7 +302,8 @@ func (c *Client) Download(ctx context.Context, assetURL, dir, want string) (stri
 	}
 	defer resp.Body.Close()
 
-	tmp, err := os.CreateTemp(dir, "mystrelay-download-*")
+	// CreateTemp fills in the last star, so the name keeps the extension.
+	tmp, err := os.CreateTemp(dir, "mystrelay-download-*"+Ext())
 	if err != nil {
 		return "", err
 	}
