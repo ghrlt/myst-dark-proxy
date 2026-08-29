@@ -55,7 +55,11 @@ usage: mystrelay <command> [flags]
 commands:
   setup        Configure this machine: identity, ports, node download, autostart
   run          Run the relay in the foreground (what autostart invokes)
-  status       Show what the running relay is doing
+  status       Show what the running relay is doing, and what it has cost
+  balance      Show what the identity paying for the exits has left
+  rotate       Leave this exit node and pick another one now
+  stop         Stop the running relay
+  tray         Windows: put a status icon in the notification area
   verify       Prove traffic leaves through the exit node, and that it stops
                when the tunnel does
   autostart    install | remove | status
@@ -87,6 +91,14 @@ func main() {
 		err = cmdSetup(args)
 	case "status":
 		err = cmdStatus(args)
+	case "balance":
+		err = cmdBalance(args)
+	case "rotate":
+		err = cmdRotate(args)
+	case "stop":
+		err = cmdStop(args)
+	case "tray":
+		err = cmdTray(args)
 	case "verify":
 		err = cmdVerify(args)
 	case "autostart":
@@ -314,8 +326,17 @@ func run(cfg *config.Config) error {
 	}
 
 	if cfg.HealthListen != "" {
+		// The control endpoints exist only when there is a secret to check
+		// callers against. Failing to write one is not a reason to refuse to
+		// run: the relay carries traffic exactly as before, it just answers
+		// questions rather than taking instructions.
+		token, err := ensureControlToken(cfg)
+		if err != nil {
+			log.Info("controls off: no secret could be stored", "err", err)
+		}
 		hs := &health.Server{
 			Listen:      cfg.HealthListen,
+			Version:     version,
 			Tunnel:      egress,
 			Gate:        killSwitch,
 			Demand:      wants,
@@ -324,6 +345,8 @@ func run(cfg *config.Config) error {
 			Endpoints:   endpoints,
 			Log:         log,
 			Started:     time.Now(),
+			Token:       token,
+			Stop:        cancel,
 		}
 		wg.Add(1)
 		go func() {

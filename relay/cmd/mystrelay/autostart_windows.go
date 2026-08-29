@@ -129,17 +129,27 @@ func installAutostart(o autostartOptions) error {
 
 // hiddenLaunch is the logon action.
 //
-// The relay is a console program, so launching it directly at logon would leave
-// a console window on screen for as long as it runs. PowerShell starts it
-// hidden instead, which is the least surprising thing for something meant to
-// sit in the background. The config path is passed as one already-quoted
-// argument because Start-Process joins -ArgumentList with spaces and quotes
-// nothing, which would split a path like C:\Users\Jean Dupont\...
+// What it starts is the tray icon by default, and the tray starts the relay: a
+// desktop install is then one thing in the notification area with the service
+// behind it, rather than a background process with no way to see or steer it.
+// "autostart install -tray=false" goes back to launching the relay alone.
+//
+// Either way it goes through PowerShell. Both are console programs, so
+// launching one directly at logon would leave a console window on screen for as
+// long as it runs; Start-Process starts it hidden instead, which is the least
+// surprising thing for something meant to sit in the background. The config
+// path is passed as one already-quoted argument because Start-Process joins
+// -ArgumentList with spaces and quotes nothing, which would split a path like
+// C:\Users\Jean Dupont\...
 func hiddenLaunch(o autostartOptions) string {
+	verb := "run"
+	if o.Tray {
+		verb = "tray"
+	}
 	ps := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 	command := fmt.Sprintf(
-		`Start-Process -FilePath %s -ArgumentList ('run -config ' + [char]34 + %s + [char]34) -WindowStyle Hidden`,
-		ps(o.Executable), ps(o.ConfigPath))
+		`Start-Process -FilePath %s -ArgumentList ('%s -config ' + [char]34 + %s + [char]34) -WindowStyle Hidden`,
+		ps(o.Executable), verb, ps(o.ConfigPath))
 	return execAction(powershellPath(),
 		fmt.Sprintf(`-NoProfile -NonInteractive -WindowStyle Hidden -Command "%s"`, command))
 }
@@ -243,11 +253,15 @@ func autostartStatus() (string, error) {
 }
 
 // restartHint is what to type to put a newly installed binary into service.
-// The scheduler owns the process when autostart is registered, so stopping the
-// task and starting it again is the whole of it.
+//
+// The relay is asked to stop rather than the task being ended: at logon scope
+// the task's own process is the launcher, which exited seconds after sign-in,
+// so ending the task would leave the relay running. Stopping through the relay
+// itself works whatever started it.
 func restartHint() string {
 	if taskExists() {
-		return "  schtasks /end /tn " + taskName + "\n  schtasks /run /tn " + taskName
+		return "  " + exeName() + " stop\n  schtasks /run /tn " + taskName +
+			"\n\nOr use the tray icon: right-click it and choose Restart relay."
 	}
-	return "  stop it where it is running, then: " + exeName() + " run"
+	return "  " + exeName() + " stop\n  " + exeName() + " run"
 }

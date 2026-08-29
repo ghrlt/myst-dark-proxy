@@ -9,6 +9,8 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math/big"
 	"net"
 	"sync"
 	"time"
@@ -138,4 +140,63 @@ func (b *Broadcaster) Watch() (<-chan Status, func()) {
 			close(c)
 		}
 	}
+}
+
+// mystDecimals is how many decimal places one MYST is divided into on chain.
+// Everything the node reports about money is an integer count of the smallest
+// unit, and this is what turns one into the other.
+const mystDecimals = 18
+
+// Meter is what one span of tunnel use carried, and what the exit charged for
+// it.
+//
+// Wei is a decimal string rather than a number because MYST carries eighteen
+// decimals: a relay left running for months spends more of them than a uint64
+// can hold, and a float would round away the digits the figure exists to show.
+type Meter struct {
+	BytesSent     uint64 `json:"bytes_sent"`
+	BytesReceived uint64 `json:"bytes_received"`
+	Wei           string `json:"wei"`
+	MYST          string `json:"myst"`
+	Duration      string `json:"duration,omitempty"`
+}
+
+// Usage is what the relay has carried and what it has cost: the session open
+// right now on its own, and every session since the relay started added up.
+//
+// The two are separate because the node's own counters restart with each
+// session, so its answer alone says nothing about the day's spending.
+type Usage struct {
+	Session  Meter  `json:"session"`
+	Total    Meter  `json:"total"`
+	Sessions uint64 `json:"sessions_total"`
+}
+
+// Balance is what the identity has left to spend, as the node reports it.
+type Balance struct {
+	Identity     string    `json:"identity"`
+	Registration string    `json:"registration"`
+	MYST         string    `json:"myst"`
+	Wei          string    `json:"wei"`
+	Channel      string    `json:"channel,omitempty"`
+	At           time.Time `json:"at"`
+}
+
+// FormatMYST renders an amount of wei as MYST to four decimal places - enough
+// to see what a session cost, few enough to read at a glance.
+func FormatMYST(wei *big.Int) string {
+	if wei == nil {
+		return "0.0000"
+	}
+	// Scale down to ten-thousandths of a MYST first, then split that integer
+	// into its whole and fractional halves. Keeping the whole calculation in
+	// integers is what stops the answer being rounded twice.
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(mystDecimals-4), nil)
+	units := new(big.Int).Quo(new(big.Int).Abs(wei), scale)
+	whole, frac := new(big.Int).QuoRem(units, big.NewInt(10000), new(big.Int))
+	sign := ""
+	if wei.Sign() < 0 {
+		sign = "-"
+	}
+	return fmt.Sprintf("%s%s.%04d", sign, whole, frac)
 }

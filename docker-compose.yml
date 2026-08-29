@@ -124,6 +124,13 @@ services:
 
       RELAY_PROXY_USER: ${RELAY_PROXY_USER:-}
       RELAY_PROXY_PASS: ${RELAY_PROXY_PASS:-}
+
+      # The endpoints that take instructions rather than answer questions are
+      # off unless a secret is set: this container's filesystem is read-only,
+      # so the relay has nowhere to write one of its own. With a secret they
+      # are reachable from inside the container, which is where
+      # "docker compose exec relay /mystrelay rotate" asks from.
+      RELAY_CONTROL_TOKEN: ${RELAY_CONTROL_TOKEN:-}
       RELAY_KILLSWITCH_STRICT: ${RELAY_KILLSWITCH_STRICT:-true}
       RELAY_DIAL_TIMEOUT: ${RELAY_DIAL_TIMEOUT:-30s}
       RELAY_IDLE_TIMEOUT: ${RELAY_IDLE_TIMEOUT:-0}

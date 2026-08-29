@@ -49,6 +49,9 @@ func cmdStatus(args []string) error {
 	if k.Reason != "" {
 		fmt.Printf("               %s\n", k.Reason)
 	}
+	if line := usageLine(rep); line != "" {
+		fmt.Printf("  usage        %s\n", line)
+	}
 	fmt.Printf("  uptime       %s\n\n", rep.Uptime)
 	for _, e := range rep.Endpoints {
 		fmt.Printf("  %-10s %s\n", e.Name, e.Addr)
@@ -144,8 +147,9 @@ func cmdVerify(args []string) error {
 // --- status document -------------------------------------------------------
 
 type statusReport struct {
-	Uptime string `json:"uptime"`
-	Tunnel struct {
+	Version string `json:"version"`
+	Uptime  string `json:"uptime"`
+	Tunnel  struct {
 		State      string `json:"state"`
 		ProviderID string `json:"provider_id"`
 		Country    string `json:"country"`
@@ -168,26 +172,33 @@ type statusReport struct {
 		IdleFor     string `json:"idle_for"`
 		Opened      uint64 `json:"opened_total"`
 	} `json:"sessions"`
+	Usage *struct {
+		Session  meterReport `json:"session"`
+		Total    meterReport `json:"total"`
+		Sessions uint64      `json:"sessions_total"`
+	} `json:"usage"`
 	Endpoints []struct {
 		Name string `json:"name"`
 		Addr string `json:"addr"`
 	} `json:"endpoints"`
 	Healthy bool `json:"healthy"`
 	Ready   bool `json:"ready"`
+	Control bool `json:"control"`
+}
+
+// meterReport is one span of the usage document.
+type meterReport struct {
+	BytesSent     uint64 `json:"bytes_sent"`
+	BytesReceived uint64 `json:"bytes_received"`
+	Wei           string `json:"wei"`
+	MYST          string `json:"myst"`
+	Duration      string `json:"duration"`
 }
 
 func fetchStatus(listen string) (*statusReport, error) {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return nil, err
-	}
-	if host == "0.0.0.0" || host == "" || host == "::" {
-		host = "127.0.0.1"
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"http://"+net.JoinHostPort(host, port)+"/status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthBase(listen)+"/status", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -284,6 +295,23 @@ func headline(rep *statusReport) string {
 		return "- idle: no session, the next client opens one"
 	}
 	return "\u2717 not carrying traffic"
+}
+
+// usageLine says what has been carried and what the exits charged for it. The
+// session on its own is worth a mention while there is one: it is the part that
+// is still growing, and the part a bill in progress is made of.
+func usageLine(rep *statusReport) string {
+	u := rep.Usage
+	if u == nil {
+		return ""
+	}
+	line := fmt.Sprintf("%s in, %s out, %s MYST total",
+		humanBytes(u.Total.BytesReceived), humanBytes(u.Total.BytesSent), u.Total.MYST)
+	if rep.Healthy {
+		line += fmt.Sprintf("; this session %s in, %s out, %s MYST",
+			humanBytes(u.Session.BytesReceived), humanBytes(u.Session.BytesSent), u.Session.MYST)
+	}
+	return line
 }
 
 // sessionLine describes the session policy and what it has cost so far.

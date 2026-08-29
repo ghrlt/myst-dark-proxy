@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,7 @@ func cmdSetup(args []string) error {
 		healthPort = fs.Int("health-port", 7348, "fixed local health/status port")
 		country    = fs.String("country", "", "restrict exits to these countries, comma separated (e.g. NL,DE)")
 		autostart  = fs.String("autostart", "", "none | logon | boot  (prompted for when omitted)")
+		tray       = fs.Bool("tray", true, "Windows: start the notification-area icon at logon, which runs the relay")
 		noPrompt   = fs.Bool("yes", false, "never prompt; use flags and defaults")
 		home       = fs.String("home", "", "install directory (default "+config.AppDir()+")")
 	)
@@ -191,6 +193,7 @@ func cmdSetup(args []string) error {
 			Executable: exe,
 			ConfigPath: cfgPath,
 			AppDir:     appDir,
+			Tray:       *tray,
 		}); err != nil {
 			return fmt.Errorf("register autostart: %w", err)
 		}
@@ -211,6 +214,9 @@ Point your applications at:
 `, exeName(), exeName(), exeName(), exeName(), *socksPort, *httpPort)
 	if choice != "none" {
 		fmt.Printf("\nIt will also start automatically at %s.\n", choice)
+	}
+	if choice == "logon" && *tray && (runtime.GOOS == "windows" || runtime.GOOS == "linux") {
+		fmt.Printf("A status icon appears in the notification area: right-click it for status,\nusage, balance, a different exit node, and restart or stop. Put one there\nnow with \"%s tray\".\n", exeName())
 	}
 	fmt.Printf("\nBrowser settings that matter for leaks are in docs/WINDOWS.md.\n")
 	return nil

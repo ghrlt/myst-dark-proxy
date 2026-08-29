@@ -8,15 +8,25 @@
 // and waiting for a client. /healthz reports readiness, because a supervisor
 // restarting a relay for resting would be restarting it for working correctly;
 // /status and /metrics report both.
+//
+// Everything under /control is the other direction: asking the relay to do
+// something rather than asking it how it is. Those endpoints exist for the
+// Windows tray icon and the matching CLI commands, and they are held to a
+// tighter rule than the read-only ones - a shared secret from a file only this
+// account can read, and loopback callers only - because "change my exit" and
+// "stop carrying traffic" are not things a web page the operator happens to be
+// visiting should be able to ask for.
 package health
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
@@ -33,6 +43,7 @@ type Endpoint struct {
 // Server publishes relay status.
 type Server struct {
 	Listen      string
+	Version     string
 	Tunnel      tunnel.Tunnel
 	Gate        *gate.Gate
 	Demand      *demand.Tracker // nil when the session is not tied to clients
@@ -41,6 +52,33 @@ type Server struct {
 	Endpoints   []Endpoint
 	Log         *slog.Logger
 	Started     time.Time
+
+	// Token is the secret /control callers must present. An empty one leaves
+	// the control endpoints off entirely, which is what a deployment with
+	// nowhere to keep a secret - the read-only container - gets.
+	Token string
+	// Stop shuts the relay down. Nil leaves that endpoint off, so a build that
+	// has no way to stop itself cleanly does not pretend otherwise.
+	Stop func()
+}
+
+// controlHeader carries the shared secret. It is a header rather than a query
+// parameter so it stays out of anything that logs URLs.
+const controlHeader = "X-Relay-Control"
+
+// rotator is implemented by tunnels that can be asked to move to another exit.
+// Like sessionCounter it is deliberately optional: a tunnel with one fixed
+// endpoint is still a tunnel, it just has nowhere to rotate to.
+type rotator interface{ Rotate(reason string) bool }
+
+// meterer is implemented by tunnels that count what they have carried and what
+// it cost.
+type meterer interface{ Usage() tunnel.Usage }
+
+// balancer is implemented by tunnels that can say what the identity paying for
+// them has left.
+type balancer interface {
+	Balance(ctx context.Context) (tunnel.Balance, error)
 }
 
 // sessionCounter is implemented by tunnels that can say how many sessions they
@@ -61,31 +99,51 @@ type Sessions struct {
 // Report is the /status document.
 type Report struct {
 	Service    string        `json:"service"`
+	Version    string        `json:"version,omitempty"`
 	Uptime     string        `json:"uptime"`
 	Tunnel     tunnel.Status `json:"tunnel"`
 	KillSwitch gate.Stats    `json:"kill_switch"`
 	Sessions   Sessions      `json:"sessions"`
+	Usage      *tunnel.Usage `json:"usage,omitempty"`
 	Endpoints  []Endpoint    `json:"endpoints"`
 	Healthy    bool          `json:"healthy"`
 	Ready      bool          `json:"ready"`
+	// Control says whether this relay accepts instructions as well as
+	// questions, so a client can offer what will work rather than discovering
+	// it from a refusal.
+	Control bool `json:"control"`
 }
 
 func (s *Server) report() Report {
 	ts := s.Tunnel.Status()
 	gs := s.Gate.Stats()
 	healthy := ts.State.Usable() && gs.Open
-	return Report{
+	rep := Report{
 		Service:    "myst-relay",
+		Version:    s.Version,
 		Uptime:     time.Since(s.Started).Truncate(time.Second).String(),
 		Tunnel:     ts,
 		KillSwitch: gs,
 		Sessions:   s.sessions(),
+		Usage:      s.usage(),
 		Endpoints:  s.Endpoints,
 		Healthy:    healthy,
 		// Armed is the gate shut on purpose with a session coming. Nothing is
 		// being carried, and nothing is wrong.
-		Ready: healthy || gs.Armed,
+		Ready:   healthy || gs.Armed,
+		Control: s.Token != "",
 	}
+	return rep
+}
+
+// usage is what the tunnel has carried and spent, when it keeps count.
+func (s *Server) usage() *tunnel.Usage {
+	m, ok := s.Tunnel.(meterer)
+	if !ok {
+		return nil
+	}
+	u := m.Usage()
+	return &u
 }
 
 func (s *Server) sessions() Sessions {
@@ -119,6 +177,33 @@ func (s *Server) idleSeconds() float64 {
 
 // Serve runs the health server until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
+	srv := &http.Server{
+		Handler:           s.handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", s.Listen)
+	if err != nil {
+		return err
+	}
+	s.Log.Info("listening", "frontend", "health", "addr", ln.Addr().String())
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// handler builds the routing table, kept apart from Serve so the surface can
+// be exercised without a socket.
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		rep := s.report()
@@ -143,30 +228,147 @@ func (s *Server) Serve(ctx context.Context) error {
 		fprintCounter(w, "myst_relay_sessions_total", "Mysterium sessions opened since start.", float64(rep.Sessions.Opened))
 		fprintCounter(w, "myst_relay_admitted_total", "Streams admitted since start.", float64(rep.KillSwitch.Admitted))
 		fprintCounter(w, "myst_relay_refused_total", "Streams refused by the kill switch since start.", float64(rep.KillSwitch.Refused))
+		if u := rep.Usage; u != nil {
+			fprintCounter(w, "myst_relay_bytes_sent_total", "Bytes sent through the exit since start.", float64(u.Total.BytesSent))
+			fprintCounter(w, "myst_relay_bytes_received_total", "Bytes received through the exit since start.", float64(u.Total.BytesReceived))
+			fprintCounter(w, "myst_relay_myst_spent_total", "MYST the exits have charged since start, to four decimals.", parseFloat(u.Total.MYST))
+		}
 	})
 
-	srv := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	// Instructions rather than questions. All three are behind the same guard,
+	// which is also what decides whether they exist at all: a relay with no
+	// secret to check callers against answers 404 on every one of them. A
+	// tunnel that cannot carry out a particular one - no exit to change, no
+	// identity to price - says so with 501 rather than failing vaguely.
+	mux.HandleFunc("/control/rotate", s.guard(http.MethodPost, s.rotate))
+	mux.HandleFunc("/control/balance", s.guard(http.MethodGet, s.balance))
+	mux.HandleFunc("/control/stop", s.guard(http.MethodPost, s.stop))
+
+	return mux
+}
+
+// guard is the whole of the control surface's access rule.
+//
+// Three things must hold: the relay was given a secret to check against, the
+// caller is on this machine, and the caller knows the secret. The loopback test
+// is not the security - a token settles that - but it costs nothing and it
+// keeps a relay whose status port was deliberately published (the container
+// publishes it to the host) from also publishing its controls.
+//
+// A request carrying an Origin header is refused whatever it presents: only a
+// browser sends one, and a browser asking this relay to change its exit is a
+// page the operator is visiting, not the operator.
+func (s *Server) guard(method string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.Token == "" {
+			writeError(w, http.StatusNotFound, "this relay has no control secret, so it takes no instructions")
+			return
+		}
+		if r.Method != method {
+			w.Header().Set("Allow", method)
+			writeError(w, http.StatusMethodNotAllowed, "use "+method)
+			return
+		}
+		if r.Header.Get("Origin") != "" {
+			writeError(w, http.StatusForbidden, "controls are not reachable from a browser")
+			return
+		}
+		if !loopback(r.RemoteAddr) {
+			writeError(w, http.StatusForbidden, "controls are reachable from this machine only")
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get(controlHeader)), []byte(s.Token)) != 1 {
+			writeError(w, http.StatusForbidden, "wrong or missing control secret")
+			return
+		}
+		h(w, r)
 	}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", s.Listen)
+}
+
+// rotate moves the relay to a different exit.
+func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.Tunnel.(rotator)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this tunnel has no exit to change")
+		return
+	}
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		reason = "asked for"
+	}
+	changed := t.Rotate(reason)
+	// Not having moved is a state, not a failure: an on-demand relay that is
+	// resting has no exit to leave, and the next client picks a fresh one.
+	msg := "no session is open; the next one picks a new exit"
+	if changed {
+		msg = "leaving this exit; a new one is being picked"
+	}
+	s.Log.Info("exit change requested", "reason", reason, "had_session", changed)
+	writeJSON(w, http.StatusAccepted, map[string]any{"changing": changed, "detail": msg})
+}
+
+// balance answers what the identity has left to spend.
+func (s *Server) balance(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.Tunnel.(balancer)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this tunnel has no identity to price")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	b, err := t.Balance(ctx)
 	if err != nil {
-		return err
+		// The node is the only thing that knows, so it is down or still
+		// starting. Say that rather than reporting a balance of nothing.
+		writeError(w, http.StatusServiceUnavailable, "the node cannot be asked right now: "+err.Error())
+		return
 	}
-	s.Log.Info("listening", "frontend", "health", "addr", ln.Addr().String())
+	writeJSON(w, http.StatusOK, b)
+}
 
+// stop shuts the relay down.
+//
+// The answer is written before anything is torn down, and the shutdown itself
+// is left to a moment later: whoever asked deserves to be told it was heard,
+// and this handler's own listener is one of the things about to close.
+func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
+	if s.Stop == nil {
+		writeError(w, http.StatusNotImplemented, "this relay cannot stop itself")
+		return
+	}
+	s.Log.Info("stop requested")
+	writeJSON(w, http.StatusAccepted, map[string]any{"stopping": true})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		time.Sleep(250 * time.Millisecond)
+		s.Stop()
 	}()
+}
 
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+// loopback reports whether an address belongs to this machine's own stack.
+func loopback(remote string) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
 	}
-	return nil
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// parseFloat renders a decimal string for the metrics page, where a value that
+// cannot be parsed is better reported as zero than as a broken exposition.
+func parseFloat(s string) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

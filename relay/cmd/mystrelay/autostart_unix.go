@@ -49,7 +49,7 @@ WantedBy=%s
 		if out, err := exec.Command("systemctl", "--user", "enable", "--now", taskName+".service").CombinedOutput(); err != nil {
 			return fmt.Errorf("systemctl --user enable: %w\n%s", err, out)
 		}
-		return nil
+		return writeTrayAutostart(o)
 
 	case "boot":
 		staged := filepath.Join(o.AppDir, taskName+".service")
@@ -66,10 +66,46 @@ WantedBy=%s
 	}
 }
 
+// writeTrayAutostart adds the status icon to what the desktop session starts.
+//
+// The unit is what runs the relay here - systemd is a better supervisor than
+// anything this program could be - so the icon is a separate entry that
+// attaches to it, rather than the arrangement Windows gets where the icon owns
+// the relay. Removing the entry is all it takes to go back to a relay with no
+// icon; the relay itself is unaffected either way.
+func writeTrayAutostart(o autostartOptions) error {
+	path := trayDesktopPath()
+	if !o.Tray {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	entry := fmt.Sprintf(`[Desktop Entry]
+Type=Application
+Name=myst-relay status icon
+Comment=Status, usage, balance and exit control for the myst-relay proxy
+Exec=%s tray -config %s
+Terminal=false
+X-GNOME-Autostart-enabled=true
+`, o.Executable, o.ConfigPath)
+	return os.WriteFile(path, []byte(entry), 0o644)
+}
+
+func trayDesktopPath() string {
+	return filepath.Join(userConfigHome(), "autostart", taskName+"-tray.desktop")
+}
+
 func removeAutostart() error {
 	_, _ = exec.Command("systemctl", "--user", "disable", "--now", taskName+".service").CombinedOutput()
 	path := filepath.Join(userConfigHome(), "systemd", "user", taskName+".service")
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(trayDesktopPath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	_, _ = exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
@@ -82,7 +118,11 @@ func autostartStatus() (string, error) {
 		return fmt.Sprintf("not installed. Register it with: %s autostart install -scope logon", exeName()), nil
 	}
 	out, _ := exec.Command("systemctl", "--user", "is-active", taskName+".service").CombinedOutput()
-	return fmt.Sprintf("installed: %s (%s)", path, strings.TrimSpace(string(out))), nil
+	status := fmt.Sprintf("installed: %s (%s)", path, strings.TrimSpace(string(out)))
+	if _, err := os.Stat(trayDesktopPath()); err == nil {
+		status += "\nstatus icon: " + trayDesktopPath()
+	}
+	return status, nil
 }
 
 func userConfigHome() string {

@@ -79,13 +79,30 @@ registry keys, no firewall rules.
 
 ```powershell
 mystrelay.exe run       # run it
-mystrelay.exe status    # what it is doing right now
+mystrelay.exe tray      # put a status icon in the notification area
+mystrelay.exe status    # what it is doing right now, and what it has cost
+mystrelay.exe balance   # what the identity paying for the exits has left
+mystrelay.exe rotate    # leave this exit node and pick another one
+mystrelay.exe stop      # stop the running relay
 mystrelay.exe verify    # prove traffic leaves through the exit, not through you
 mystrelay.exe update    # check for a newer release and install it over itself
 
 mystrelay.exe autostart install -scope logon   # at sign-in, as you (no admin)
 mystrelay.exe autostart install -scope boot    # before sign-in, as SYSTEM (admin)
 ```
+
+A logon registration starts the **notification-area icon**, and the icon starts
+the relay behind it, so a desktop install is one thing you can see and steer
+rather than a hidden background process. Right-click it for status, usage,
+MYST balance, a different exit node, and restart or stop; the colour says what
+it is doing at a glance - green carrying, blue resting between clients, amber
+building a session, red refusing, grey not running. `-tray=false` on the
+autostart command goes back to launching the relay alone.
+
+The same icon runs on Linux: `mystrelay tray`, spoken as StatusNotifierItem
+over D-Bus, which is what XFCE, KDE and GNOME-with-an-extension listen for.
+There the systemd user unit keeps the relay and the icon attaches to it, and
+`autostart install -scope logon` adds it to the session as well.
 
 Scripted, without prompts:
 
@@ -159,6 +176,27 @@ cost](#sessions-and-what-they-cost)). `/healthz` reports **readiness**, so a
 supervisor does not restart a relay for waiting: `200` while carrying or
 resting, `503` when something is actually wrong. `/metrics` serves the same
 counters in Prometheus format.
+
+A `usage` block sits alongside, carrying what the exits have charged: bytes
+each way for the open session and for every session since start, and the cost
+in MYST. The node counts per session and forgets when one ends, so the totals
+are kept by the relay.
+
+### Controls
+
+Three endpoints take instructions rather than answering questions:
+`/control/rotate` moves to a different exit, `/control/balance` reads what the
+identity has left, and `/control/stop` shuts the relay down. They are what the
+tray icon and the `rotate`, `balance` and `stop` commands use.
+
+They are held to a tighter rule than the read-only endpoints: a caller must
+come from this machine and present the secret from `control.token`, written
+beside `config.env` on the first start and readable only by the account that
+owns it. A request carrying an `Origin` header is refused outright, whatever it
+presents, so a web page cannot reach them from the browser the operator happens
+to be using. Where no secret can be written - the container runs on a read-only
+filesystem - the endpoints do not exist at all, and `"control": false` in the
+status document says so.
 
 ## Configuration
 

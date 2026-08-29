@@ -5,8 +5,12 @@ is no Docker, no service to install by hand, and nothing to keep in sync.
 
 ```
 mystrelay.exe setup     configure, fetch the node, register autostart
+mystrelay.exe tray      put a status icon in the notification area
 mystrelay.exe run       run it
-mystrelay.exe status    what it is doing right now
+mystrelay.exe status    what it is doing right now, and what it has cost
+mystrelay.exe balance   what the identity paying for the exits has left
+mystrelay.exe rotate    leave this exit node and pick another one
+mystrelay.exe stop      stop the running relay
 mystrelay.exe verify    prove traffic leaves through the exit, not through you
 mystrelay.exe update    check for a newer release and install it over itself
 ```
@@ -61,9 +65,14 @@ mystrelay.exe autostart remove
 Both register a Scheduled Task named `myst-relay`.
 
 The **logon** task is registered against your account alone: it triggers at your
-sign-in and runs as you, so an ordinary terminal is all it takes. It launches
-the relay hidden, so no console window sits on your desktop; check
-`logs\relay.log` to see what it is doing.
+sign-in and runs as you, so an ordinary terminal is all it takes. What it
+launches is the **status icon**, and the icon starts the relay behind it - one
+thing in the notification area rather than a hidden process with no way to see
+it. Nothing appears on your desktop but the icon; `logs\relay.log` still has the
+detail.
+
+Add `-tray=false` to launch the relay on its own instead, the way earlier
+versions did.
 
 The **boot** task runs as the system account before anyone signs in. Only an
 administrator can register that, so open the terminal with *Run as
@@ -71,7 +80,79 @@ administrator* for it - and for removing it again later.
 
 Pick **logon** unless something that runs before you sign in needs the proxy.
 
-## 3. Point your apps at it
+## 3. The icon in the notification area
+
+```
+mystrelay.exe tray
+```
+
+A small coloured disc appears near the clock. Its colour is the answer to "is my
+traffic going through the exit right now?" without opening anything:
+
+| | |
+|---|---|
+| green | carrying traffic |
+| blue | resting: no session, because nothing is using it |
+| amber | building a session |
+| red | refusing traffic - the tunnel is down and the kill switch is shut |
+| grey | no relay is running |
+
+Hover for the same thing in words, with the exit address. Right-click for the
+menu:
+
+- **Status** - the whole picture: tunnel, session policy, exit and provider,
+  kill-switch counters, and the ports to point applications at. Double-clicking
+  the icon opens this too.
+- **Usage** - what has been carried and what it cost. Bytes each way for the
+  open session and for every session since the relay started, the cost in MYST,
+  and how many sessions have been paid for. The figures come from the node,
+  which counts what the exit charges for; the totals reset when the relay does.
+- **Balance** - what the identity has left, its registration status and its
+  payment channel. Top it up in the Mysterium app: this service spends an
+  identity, it does not fund one.
+- **Change exit node** - leave this provider and pick another. The one being
+  left is set aside for the next choice, so you get a different exit unless your
+  exit policy leaves only one. Streams open at that moment are dropped, the same
+  as any other time the tunnel goes away; the next connection uses the new exit.
+- **Restart relay** / **Stop relay** - the relay is asked to shut down properly
+  rather than killed, because it is what stops the Mysterium node; a node left
+  behind holds the port its replacement needs.
+- **Quit icon** - takes the icon away and leaves the relay running. Where this
+  icon is what started the relay there is a second item, **Quit icon and stop the
+  relay**, because either one would be a surprise as the only choice: a proxy
+  left running with nothing to show it, or one stopped by a click that said
+  nothing about stopping it.
+
+The icon is a client, not the service. It asks the running relay over the same
+status port everything else uses. An icon that is closed, crashed or never
+started changes nothing about whether traffic is being carried or refused.
+
+The same icon runs on Linux, where it is a StatusNotifierItem on D-Bus rather
+than a Win32 window - XFCE, KDE and GNOME-with-an-extension all show it. The
+menu is the same; the differences are that systemd keeps the relay there and the
+icon attaches to it, and that reports open in whichever dialog program the
+desktop has (zenity, kdialog, yad) rather than in a message box.
+
+If a relay is already running when the icon starts - a boot-scope task, or one
+you started in a terminal - the icon attaches to it and leaves it to its owner.
+Otherwise the icon starts one and keeps it running, putting it back if it exits
+on its own. `-attach` never starts or stops anything, for when something else
+should own the relay.
+
+### What lets the icon give instructions
+
+Asking the relay what it is doing needs nothing. Asking it to *do* something -
+change exit, read the balance, stop - needs the secret in
+`%LOCALAPPDATA%\myst-relay\control.token`, which the relay writes on its first
+start and only your account can read. Callers must also be on this machine, and
+a request carrying a browser's `Origin` header is refused whatever it presents,
+so a web page you happen to be visiting cannot reach these.
+
+Delete the file and the relay writes a new one at its next start; every menu
+item that instructs rather than asks stops working until then, and the menu says
+so instead of offering buttons that fail.
+
+## 4. Point your apps at it
 
 | | |
 |---|---|
@@ -109,7 +190,7 @@ msedge.exe --proxy-server="socks5://127.0.0.1:7362"
 Put that on a desktop shortcut if only some browsing should go through the
 relay.
 
-## 4. The settings that actually stop leaks
+## 5. The settings that actually stop leaks
 
 **This relay carries TCP only.** UDP is refused rather than passed through, so it
 can never leak *through* the relay - but a browser can still send UDP directly,
@@ -151,7 +232,7 @@ To apply it to every launch instead of one shortcut, set a policy (needs admin -
 With the relay running, visit a leak-test page and confirm the address shown
 matches `mystrelay.exe status`, and that no WebRTC address is your own.
 
-## 5. Prove it works
+## 6. Prove it works
 
 ```
 mystrelay.exe verify
@@ -160,7 +241,7 @@ mystrelay.exe verify
 It fetches your real address directly, then again through each port, and fails
 loudly if they match. `status` shows the live exit and the kill-switch counters.
 
-## 6. What happens when the tunnel drops
+## 7. What happens when the tunnel drops
 
 Nothing gets through. New connections are refused on every port - SOCKS5 answers
 *not allowed*, the HTTP proxy answers `503`, the raw port closes - and streams
@@ -172,7 +253,7 @@ something is still using it, otherwise the next time something connects - and
 only reports itself healthy once it has completed a real request through the
 new one.
 
-## 7. It holds a session only while you are using it
+## 8. It holds a session only while you are using it
 
 Exit providers charge by the hour as well as by the gigabyte, so a session
 nobody is using still spends your balance. The relay therefore opens one when
@@ -199,7 +280,7 @@ RELAY_ON_DEMAND=false
 RELAY_SESSION_IDLE_TIMEOUT=0
 ```
 
-## 8. Keeping it up to date
+## 9. Keeping it up to date
 
 ```
 mystrelay.exe update -check    is there a newer release?
@@ -228,8 +309,11 @@ the one on disk.
 
 Windows will not delete a running program, so the old one is renamed to
 `mystrelay.exe.old` and deleted at the next start. That also means **the relay
-already running is still the old version** - the command prints the two lines
-that restart the scheduled task.
+already running is still the old version**. Right-click the icon and choose
+*Restart relay*, or run the two lines the command prints. Ending the scheduled
+task is not enough on a desktop install: the task's own process was the launcher
+and finished seconds after sign-in, so it is the relay that has to be asked to
+stop.
 
 The Mysterium node follows the relay: each build carries the checksum of the
 node release it was tested against and installs that at the next start. A
@@ -240,7 +324,7 @@ Other flags: `-to v0.3.0` installs a named release, `-force` reinstalls the
 current one, and `-via-relay` fetches through the running relay, so the download
 leaves from the exit node rather than from your own address.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 **Nothing loads and `status` says the relay is not running** - check
 `%LOCALAPPDATA%\myst-relay\logs\relay.log`. Run `mystrelay.exe run` in a
@@ -277,7 +361,7 @@ prompt, re-registering once gives you a task that is yours alone.
 in `config.env` and restart. `EXIT_IP_TYPE=residential` also helps against sites
 that block hosting ranges.
 
-## 10. Uninstall
+## 11. Uninstall
 
 ```
 mystrelay.exe autostart remove

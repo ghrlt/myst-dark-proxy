@@ -50,6 +50,11 @@ import (
 // the scan is cheap insurance against a release that treats it as a base.
 const upstreamScanRange = 8
 
+// meterInterval is how often the node is asked what the live session has
+// carried and what it has charged. It is money, not health: nothing waits on
+// the answer, so it is read rarely enough to stay out of the way.
+const meterInterval = 15 * time.Second
+
 // Options configures the tunnel.
 type Options struct {
 	Client     *tequilapi.Client
@@ -104,9 +109,21 @@ type Tunnel struct {
 	// leave the gate open - admitting streams that are certain to fail.
 	suspect chan struct{}
 
+	// rotate carries "leave this exit now" from whoever asked - the tray, the
+	// CLI - to the session monitor. One slot: two requests arriving while the
+	// tunnel is being rebuilt are one rotation, not two.
+	rotate chan string
+
+	// acct is the money side, kept apart from the connection state so that
+	// asking what a session has cost never waits on the supervisor.
+	acct accounting
+
 	mu           sync.RWMutex
 	upstreamPort int
 	cooldown     map[string]time.Time // provider -> retry-after
+	// avoid is the provider the next pick should move away from, set when an
+	// exit change is asked for by hand.
+	avoid string
 }
 
 // New builds a tunnel. It does not contact the node; call Run for that.
@@ -123,6 +140,7 @@ func New(opt Options) *Tunnel {
 	return &Tunnel{
 		opt:          opt,
 		suspect:      make(chan struct{}, 1),
+		rotate:       make(chan string, 1),
 		log:          opt.Logger.With("component", "tunnel"),
 		bc:           tunnel.NewBroadcaster(),
 		upstreamPort: opt.ProxyPort,
@@ -425,19 +443,52 @@ func (t *Tunnel) session(ctx context.Context) error {
 		"country", status.Country,
 		"upstream", net.JoinHostPort(t.opt.ProxyHost, strconv.Itoa(port)))
 
+	t.acct.begin()
 	return t.monitor(ctx, prop.ProviderID)
+}
+
+// Rotate asks for a different exit now.
+//
+// It reports whether there was a session to leave: an on-demand relay that is
+// resting has no exit to move away from, and the next client will pick a fresh
+// one anyway, so a false here is an answer rather than a failure.
+func (t *Tunnel) Rotate(reason string) bool {
+	if !t.bc.Status().State.Usable() {
+		return false
+	}
+	select {
+	case t.rotate <- reason:
+	default: // one is already queued; two clicks are one rotation
+	}
+	return true
 }
 
 // monitor watches the live session and returns when it is no longer usable.
 func (t *Tunnel) monitor(ctx context.Context, provider string) error {
+	// The session is spent from here on, whichever way this returns.
+	defer t.acct.end()
+
 	ticker := time.NewTicker(t.opt.HealthInterval)
 	defer ticker.Stop()
 
-	var rotate <-chan time.Time
+	// The node's counters are cheap to read but they are money rather than
+	// health, so they are read on their own slower beat.
+	meter := time.NewTicker(max(t.opt.HealthInterval, meterInterval))
+	defer meter.Stop()
+	t.meterSession(ctx)
+
+	var elapsed <-chan time.Time
 	if t.opt.RotateEvery > 0 {
 		tm := time.NewTimer(t.opt.RotateEvery)
 		defer tm.Stop()
-		rotate = tm.C
+		elapsed = tm.C
+	}
+
+	// A rotation asked for while there was no session to leave would otherwise
+	// wait here and move this one the instant it came up.
+	select {
+	case <-t.rotate:
+	default:
 	}
 
 	failures := 0
@@ -445,11 +496,22 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-rotate:
+		case <-elapsed:
 			t.log.Info("rotating exit", "after", t.opt.RotateEvery)
 			t.penalise(provider, t.opt.RotateEvery)
 			t.closeSession(tunnel.StateConnecting, "rotating exit")
 			return nil
+		case reason := <-t.rotate:
+			// Asked for by hand. The provider is set aside rather than put on
+			// cooldown: whoever asked wants a different exit, not one exit
+			// fewer to choose from for the next half hour.
+			t.setAvoid(provider)
+			t.log.Info("changing exit on request", "reason", reason, "leaving", provider)
+			t.closeSession(tunnel.StateConnecting, "changing exit: "+reason)
+			return nil
+		case <-meter.C:
+			t.meterSession(ctx)
+			continue
 		case <-t.suspect:
 			// A stream just failed to reach the proxy; check now, not in 5s.
 		case <-ticker.C:
@@ -492,6 +554,39 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 		}
 		failures = 0
 	}
+}
+
+// meterSession reads the node's counters for the live session. A failure is
+// not reported: the figures are for the operator's benefit, and a tunnel that
+// is carrying traffic perfectly well should not be declared broken because the
+// question about money went unanswered.
+func (t *Tunnel) meterSession(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	st, err := t.opt.Client.Statistics(ctx, t.opt.ProxyPort)
+	if err != nil {
+		t.log.Debug("session statistics unavailable", "err", err)
+		return
+	}
+	t.acct.observe(*st)
+}
+
+// setAvoid records the exit the next pick should move away from.
+func (t *Tunnel) setAvoid(provider string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.avoid = provider
+}
+
+// takeAvoid reads and clears that exit. It applies to one pick only: a
+// provider refused forever on the strength of a single click would quietly
+// narrow the exit policy every time the button was pressed.
+func (t *Tunnel) takeAvoid() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	away := t.avoid
+	t.avoid = ""
+	return away
 }
 
 // closeSession asks the node to drop the session and records why the relay is
@@ -641,7 +736,7 @@ func (t *Tunnel) pickProposal(ctx context.Context) (*tequilapi.Proposal, error) 
 		return nil, fmt.Errorf("list proposals: %w", err)
 	}
 
-	candidates := t.filter(all, policy)
+	candidates := t.without(t.filter(all, policy), t.takeAvoid())
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no provider matches the exit policy (%d offers seen; country=%v ip_type=%v quality>=%g)",
 			len(all), policy.Countries, policy.IPTypes, policy.MinQuality)
@@ -663,6 +758,27 @@ func (t *Tunnel) pickProposal(ctx context.Context) (*tequilapi.Proposal, error) 
 	top := min(len(candidates), 5)
 	choice := candidates[rand.Intn(top)]
 	return &choice, nil
+}
+
+// without drops one provider from the candidates - the exit an operator asked
+// to move away from - unless it is the only one left. A policy narrow enough to
+// match a single provider must still be able to connect: refusing to reconnect
+// at all is a worse answer than reconnecting to the same exit.
+func (t *Tunnel) without(candidates []tequilapi.Proposal, away string) []tequilapi.Proposal {
+	if away == "" || len(candidates) < 2 {
+		return candidates
+	}
+	kept := candidates[:0]
+	for _, p := range candidates {
+		if !strings.EqualFold(p.ProviderID, away) {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		t.log.Info("the exit policy leaves only the provider being moved away from", "provider", away)
+		return candidates
+	}
+	return kept
 }
 
 func (t *Tunnel) filter(all []tequilapi.Proposal, policy config.ExitPolicy) []tequilapi.Proposal {

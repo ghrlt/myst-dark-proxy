@@ -150,6 +150,14 @@ type Config struct {
 	Forwards     []Forward
 	HealthListen string
 
+	// ControlToken is the secret that the relay's control endpoints - change
+	// exit, read balance, stop - require of a caller, and ControlTokenFile is
+	// where it is kept when it is not supplied directly. The relay writes one
+	// on first start. Neither one leaves the relay answering questions only,
+	// which is what a deployment with no writable home gets.
+	ControlToken     string
+	ControlTokenFile string
+
 	// Session lifecycle. A Mysterium session is billed by the hour as well as
 	// by the gibibyte, so one that nothing is using is money spent carrying
 	// nothing. These three decide whether a session exists at all.
@@ -191,6 +199,9 @@ func Load() (*Config, error) {
 		SocksListen:  env("RELAY_SOCKS_LISTEN", "127.0.0.1:7362"),
 		HTTPListen:   env("RELAY_HTTP_LISTEN", "127.0.0.1:7360"),
 		HealthListen: env("RELAY_HEALTH_LISTEN", "127.0.0.1:7348"),
+
+		ControlToken:     env("RELAY_CONTROL_TOKEN", ""),
+		ControlTokenFile: env("RELAY_CONTROL_TOKEN_FILE", filepath.Join(AppDir(), "control.token")),
 
 		OnDemand:     envBool("RELAY_ON_DEMAND", true),
 		SessionIdle:  envDuration("RELAY_SESSION_IDLE_TIMEOUT", 15*time.Minute),

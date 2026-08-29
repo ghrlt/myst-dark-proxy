@@ -12,6 +12,16 @@ type autostartOptions struct {
 	Executable string
 	ConfigPath string
 	AppDir     string
+	// Tray asks a logon registration to put the status icon in the
+	// notification area as well.
+	//
+	// The two desktops arrange that differently. On Windows the scheduled task
+	// starts the icon and the icon starts the relay, so one icon at sign-in is
+	// the whole of a desktop install. On Linux the systemd user unit keeps the
+	// relay - it is the better supervisor - and the icon is a separate session
+	// entry that attaches to it. Either way it is meaningless at boot scope:
+	// nothing has a desktop to draw on before anyone signs in.
+	Tray bool
 }
 
 // taskName is the identifier used by whichever scheduler the platform has.
@@ -27,6 +37,7 @@ func cmdAutostart(args []string) error {
 	fs := newFlagSet("autostart")
 	scope := fs.String("scope", "logon", "logon | boot")
 	cfgPath := fs.String("config", "", "path to config.env")
+	tray := fs.Bool("tray", true, "logon scope: also start the notification-area status icon")
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
@@ -46,6 +57,7 @@ func cmdAutostart(args []string) error {
 			Executable: exe,
 			ConfigPath: path,
 			AppDir:     appDirOf(path),
+			Tray:       *tray,
 		}); err != nil {
 			return err
 		}
@@ -68,6 +80,6 @@ func cmdAutostart(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("usage: %s autostart install|remove|status [-scope logon|boot]", exeName())
+		return fmt.Errorf("usage: %s autostart install|remove|status [-scope logon|boot] [-tray=false]", exeName())
 	}
 }
