@@ -59,7 +59,7 @@ commands:
   balance      Show what the identity paying for the exits has left
   rotate       Leave this exit node and pick another one now
   stop         Stop the running relay
-  tray         Windows: put a status icon in the notification area
+  tray         Put a status icon in the notification area (Windows, Linux)
   verify       Prove traffic leaves through the exit node, and that it stops
                when the tunnel does
   autostart    install | remove | status
