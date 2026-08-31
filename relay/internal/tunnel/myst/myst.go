@@ -560,10 +560,16 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 // not reported: the figures are for the operator's benefit, and a tunnel that
 // is carrying traffic perfectly well should not be declared broken because the
 // question about money went unanswered.
+//
+// The counters are asked for by session id rather than by proxy port. That is
+// the one place the node breaks its own rule - every other /connection endpoint
+// keys on the port, this one keys on the session's UUID - and it does not
+// complain about an id it does not recognise: it answers a document of zeros,
+// which is indistinguishable from a session that has carried nothing.
 func (t *Tunnel) meterSession(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	st, err := t.opt.Client.Statistics(ctx, t.opt.ProxyPort)
+	st, err := t.opt.Client.Statistics(ctx, t.bc.Status().SessionID)
 	if err != nil {
 		t.log.Debug("session statistics unavailable", "err", err)
 		return

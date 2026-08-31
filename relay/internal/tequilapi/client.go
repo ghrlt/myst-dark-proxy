@@ -13,7 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -296,13 +298,46 @@ type Statistics struct {
 	Duration      int64  `json:"duration"`
 	BytesSent     uint64 `json:"bytes_sent"`
 	BytesReceived uint64 `json:"bytes_received"`
-	TokensSpent   uint64 `json:"tokens_spent"`
+	// tokens_spent is a big.Int rendered as a bare JSON number. A session that
+	// runs long enough overflows uint64, and a decode that fails takes the
+	// byte counters down with it, so it is kept unparsed. spent_tokens carries
+	// the same figure as strings and is what Wei prefers.
+	TokensSpent json.Number `json:"tokens_spent"`
+	SpentTokens struct {
+		Wei   string `json:"wei"`
+		Ether string `json:"ether"`
+		Human string `json:"human"`
+	} `json:"spent_tokens"`
 }
 
-// Statistics returns the current session counters.
-func (c *Client) Statistics(ctx context.Context, id int) (*Statistics, error) {
+// Wei is what the session has cost so far, in the smallest unit of MYST.
+func (s Statistics) Wei() *big.Int {
+	for _, raw := range []string{strings.TrimSpace(s.SpentTokens.Wei), strings.TrimSpace(s.TokensSpent.String())} {
+		if raw == "" {
+			continue
+		}
+		if n, ok := new(big.Int).SetString(raw, 10); ok {
+			return n
+		}
+	}
+	return new(big.Int)
+}
+
+// Statistics returns the counters for one session.
+//
+// The session id is the session's UUID, not the connection id every other
+// /connection endpoint takes: this one alone looks the session up by the id the
+// node reported when it opened it, and answers with a zeroed document for
+// anything else - which is what a proxy port passed here quietly produces. An
+// empty id asks for whichever session the node holds, which for this relay is
+// the only one there is.
+func (c *Client) Statistics(ctx context.Context, sessionID string) (*Statistics, error) {
+	path := "/connection/statistics"
+	if sessionID != "" {
+		path += "?id=" + url.QueryEscape(sessionID)
+	}
 	var out Statistics
-	err := c.do(ctx, http.MethodGet, connPath("/connection/statistics", id), nil, &out, true)
+	err := c.do(ctx, http.MethodGet, path, nil, &out, true)
 	return &out, err
 }
 

@@ -13,7 +13,7 @@ func TestSessionsAddUpRatherThanReplacingEachOther(t *testing.T) {
 	var a accounting
 
 	a.begin()
-	a.observe(tequilapi.Statistics{BytesSent: 100, BytesReceived: 900, TokensSpent: 5})
+	a.observe(tequilapi.Statistics{BytesSent: 100, BytesReceived: 900, TokensSpent: "5"})
 	live := a.snapshot(1)
 	if live.Session.BytesReceived != 900 || live.Total.BytesReceived != 900 {
 		t.Fatalf("during the first session: session=%d total=%d, want 900 and 900",
@@ -22,7 +22,7 @@ func TestSessionsAddUpRatherThanReplacingEachOther(t *testing.T) {
 	a.end()
 
 	a.begin()
-	a.observe(tequilapi.Statistics{BytesSent: 10, BytesReceived: 90, TokensSpent: 2})
+	a.observe(tequilapi.Statistics{BytesSent: 10, BytesReceived: 90, TokensSpent: "2"})
 	got := a.snapshot(2)
 
 	if got.Session.BytesSent != 10 || got.Session.BytesReceived != 90 {
@@ -45,7 +45,7 @@ func TestAClosedSessionLeavesTheTotalAlone(t *testing.T) {
 	var a accounting
 
 	a.begin()
-	a.observe(tequilapi.Statistics{BytesSent: 7, BytesReceived: 11, TokensSpent: 3})
+	a.observe(tequilapi.Statistics{BytesSent: 7, BytesReceived: 11, TokensSpent: "3"})
 	a.end()
 
 	got := a.snapshot(1)
@@ -63,7 +63,7 @@ func TestAnUnclosedSessionIsStillCounted(t *testing.T) {
 	var a accounting
 
 	a.begin()
-	a.observe(tequilapi.Statistics{BytesSent: 4, BytesReceived: 6, TokensSpent: 1})
+	a.observe(tequilapi.Statistics{BytesSent: 4, BytesReceived: 6, TokensSpent: "1"})
 	a.begin() // no end in between
 
 	if got := a.snapshot(2); got.Total.BytesReceived != 6 || got.Total.Wei != "1" {
@@ -75,7 +75,7 @@ func TestAnUnclosedSessionIsStillCounted(t *testing.T) {
 func TestCountersWithoutASessionAreIgnored(t *testing.T) {
 	var a accounting
 
-	a.observe(tequilapi.Statistics{BytesSent: 5, BytesReceived: 5, TokensSpent: 5})
+	a.observe(tequilapi.Statistics{BytesSent: 5, BytesReceived: 5, TokensSpent: "5"})
 
 	if got := a.snapshot(0); got.Total.BytesSent != 0 || got.Total.Wei != "0" {
 		t.Errorf("total: got %+v, want nothing", got.Total)

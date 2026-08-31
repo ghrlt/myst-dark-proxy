@@ -60,7 +60,7 @@ func (a *accounting) observe(st tequilapi.Statistics) {
 		return
 	}
 	a.sent, a.recv = st.BytesSent, st.BytesReceived
-	a.wei = new(big.Int).SetUint64(st.TokensSpent)
+	a.wei = st.Wei()
 }
 
 // end closes the session span and folds it into the totals.
