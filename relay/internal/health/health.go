@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
@@ -75,6 +76,14 @@ type rotator interface{ Rotate(reason string) bool }
 // it cost.
 type meterer interface{ Usage() tunnel.Usage }
 
+// exitTyper is implemented by tunnels whose choice of exit can be narrowed to
+// certain kinds of address while they run. Like rotator it is optional: a
+// tunnel with one fixed endpoint has no choice to narrow.
+type exitTyper interface {
+	ExitTypes() []string
+	SetExitTypes(ctx context.Context, types []string) ([]string, int, error)
+}
+
 // balancer is implemented by tunnels that can say what the identity paying for
 // them has left.
 type balancer interface {
@@ -105,9 +114,12 @@ type Report struct {
 	KillSwitch gate.Stats    `json:"kill_switch"`
 	Sessions   Sessions      `json:"sessions"`
 	Usage      *tunnel.Usage `json:"usage,omitempty"`
-	Endpoints  []Endpoint    `json:"endpoints"`
-	Healthy    bool          `json:"healthy"`
-	Ready      bool          `json:"ready"`
+	// Exit is the part of the exit policy that can be changed while the relay
+	// runs, so a client can show what is in force and offer to move it.
+	Exit      *ExitPolicy `json:"exit,omitempty"`
+	Endpoints []Endpoint  `json:"endpoints"`
+	Healthy   bool        `json:"healthy"`
+	Ready     bool        `json:"ready"`
 	// Control says whether this relay accepts instructions as well as
 	// questions, so a client can offer what will work rather than discovering
 	// it from a refusal.
@@ -126,6 +138,7 @@ func (s *Server) report() Report {
 		KillSwitch: gs,
 		Sessions:   s.sessions(),
 		Usage:      s.usage(),
+		Exit:       s.exit(),
 		Endpoints:  s.Endpoints,
 		Healthy:    healthy,
 		// Armed is the gate shut on purpose with a session coming. Nothing is
@@ -134,6 +147,29 @@ func (s *Server) report() Report {
 		Control: s.Token != "",
 	}
 	return rep
+}
+
+// ExitPolicy is the part of what the relay will accept as an exit that can be
+// moved while it runs.
+//
+// An empty IPTypes means every kind is acceptable, which is a setting in its
+// own right rather than an absent answer, so it is always present. Whether it
+// can be changed from here is what Control says.
+type ExitPolicy struct {
+	IPTypes []string `json:"ip_types"`
+}
+
+// exit is the exit policy in force, when the tunnel has one that can be moved.
+func (s *Server) exit() *ExitPolicy {
+	t, ok := s.Tunnel.(exitTyper)
+	if !ok {
+		return nil
+	}
+	types := t.ExitTypes()
+	if types == nil {
+		types = []string{}
+	}
+	return &ExitPolicy{IPTypes: types}
 }
 
 // usage is what the tunnel has carried and spent, when it keeps count.
@@ -241,6 +277,7 @@ func (s *Server) handler() http.Handler {
 	// tunnel that cannot carry out a particular one - no exit to change, no
 	// identity to price - says so with 501 rather than failing vaguely.
 	mux.HandleFunc("/control/rotate", s.guard(http.MethodPost, s.rotate))
+	mux.HandleFunc("/control/exit-type", s.guard(http.MethodPost, s.exitType))
 	mux.HandleFunc("/control/balance", s.guard(http.MethodGet, s.balance))
 	mux.HandleFunc("/control/stop", s.guard(http.MethodPost, s.stop))
 
@@ -305,6 +342,69 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("exit change requested", "reason", reason, "had_session", changed)
 	writeJSON(w, http.StatusAccepted, map[string]any{"changing": changed, "detail": msg})
+}
+
+// exitType narrows the exit policy to a kind of exit address, and moves off the
+// current exit when it no longer satisfies it.
+//
+// The move is the reason this is not merely a setting. A relay told to use
+// residential exits while it sits on a hosting one has been asked a question
+// about the traffic it is carrying now, not about the traffic it will carry
+// after whatever session it happens to hold expires.
+func (s *Server) exitType(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.Tunnel.(exitTyper)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this tunnel has no choice of exit to narrow")
+		return
+	}
+	var types []string
+	if raw := r.URL.Query().Get("type"); raw != "" {
+		types = strings.Split(raw, ",")
+	}
+
+	// Counting what the policy leaves means asking the node for a proposal
+	// list, which is the one slow thing behind any of these endpoints.
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	applied, matches, err := t.SetExitTypes(ctx, types)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if applied == nil {
+		applied = []string{}
+	}
+
+	// Only leave the exit when it no longer fits. Rotating off one that does is
+	// a session bought for nothing, and the answer says which happened.
+	moved := false
+	if r0, ok := s.Tunnel.(rotator); ok && !s.exitFits(applied) {
+		moved = r0.Rotate("exit type changed")
+	}
+	s.Log.Info("exit type changed", "ip_types", applied, "providers", matches, "left_exit", moved)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ip_types":  applied,
+		"providers": matches,
+		"changing":  moved,
+	})
+}
+
+// exitFits reports whether the exit in use already satisfies the policy. A
+// relay with no session has nothing to move and nothing to keep, so it fits.
+func (s *Server) exitFits(types []string) bool {
+	if len(types) == 0 {
+		return true
+	}
+	st := s.Tunnel.Status()
+	if !st.State.Usable() {
+		return true
+	}
+	for _, t := range types {
+		if strings.EqualFold(t, st.IPType) {
+			return true
+		}
+	}
+	return false
 }
 
 // balance answers what the identity has left to spend.

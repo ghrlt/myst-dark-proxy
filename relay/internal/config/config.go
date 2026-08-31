@@ -226,7 +226,7 @@ func Load() (*Config, error) {
 		Exit: ExitPolicy{
 			ProviderID:  env("EXIT_PROVIDER_ID", ""),
 			Countries:   envList("EXIT_COUNTRY", nil),
-			IPTypes:     envList("EXIT_IP_TYPE", nil),
+			IPTypes:     NormaliseExitTypes(envList("EXIT_IP_TYPE", nil)),
 			ServiceType: env("EXIT_SERVICE_TYPE", "wireguard"),
 			MinQuality:  envFloat("EXIT_MIN_QUALITY", 1.0),
 			MaxLatency:  envDuration("EXIT_MAX_LATENCY", 0),

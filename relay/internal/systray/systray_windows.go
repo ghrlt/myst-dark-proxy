@@ -86,6 +86,8 @@ const (
 
 	mfString    = 0x000
 	mfGrayed    = 0x001
+	mfChecked   = 0x008
+	mfPopup     = 0x010
 	mfSeparator = 0x800
 
 	tpmLeftAlign   = 0x0000
@@ -562,29 +564,12 @@ func (s *runState) showMenu() {
 	if hmenu == 0 {
 		return
 	}
+	// A menu destroyed takes its submenus with it, so the one handle here
+	// releases everything the walk below created.
 	defer procDestroyMenu.Call(hmenu)
 
-	var bold uintptr
-	for i, item := range items {
-		if item.Separator {
-			procAppendMenu.Call(hmenu, mfSeparator, 0, 0)
-			continue
-		}
-		flags := uintptr(mfString)
-		if item.Disabled {
-			flags |= mfGrayed
-		}
-		id := uintptr(i + 1) // TrackPopupMenu returns 0 for "nothing chosen"
-		label := utf16Ptr(item.Label)
-		procAppendMenu.Call(hmenu, flags, id, uintptr(unsafe.Pointer(label)))
-		runtime.KeepAlive(label)
-		if item.Bold && bold == 0 {
-			bold = id
-		}
-	}
-	if bold != 0 {
-		procSetMenuDefaultItem.Call(hmenu, bold, 0)
-	}
+	next := uintptr(0) // TrackPopupMenu returns 0 for "nothing chosen"
+	appendItems(hmenu, items, &next)
 
 	// The two calls either side of TrackPopupMenu are the documented way to
 	// make a menu belonging to a window with no taskbar presence behave:
@@ -598,17 +583,74 @@ func (s *runState) showMenu() {
 		uintptr(pt.X), uintptr(pt.Y), 0, s.data.Wnd, 0)
 	procPostMessage.Call(s.data.Wnd, wmNull, 0, 0)
 
-	if chosen == 0 || int(chosen) > len(items) {
+	flat := flatten(items)
+	if chosen == 0 || int(chosen) > len(flat) {
 		return
 	}
-	if do := items[chosen-1].Do; do != nil {
+	if do := flat[chosen-1].Do; do != nil {
 		go do()
+	}
+}
+
+// appendItems fills a menu, opening a submenu of its own for any item that has
+// children, and marks that menu's own default item.
+//
+// Ids are handed out in the same depth-first order flatten walks in, so the id
+// TrackPopupMenu returns names the same line there. An item that opens a
+// submenu still takes an id it will never be clicked with - Win32 has nowhere
+// to put one on a popup - which is what keeps the two walks in step.
+func appendItems(hmenu uintptr, items []Item, next *uintptr) {
+	var bold uintptr
+	for _, item := range items {
+		*next++
+		id := *next
+		if item.Separator {
+			procAppendMenu.Call(hmenu, mfSeparator, 0, 0)
+			continue
+		}
+		label := utf16Ptr(item.Label)
+
+		if len(item.Children) > 0 {
+			sub, _, _ := procCreatePopupMenu.Call()
+			if sub == 0 {
+				// The submenu cannot be drawn, but its ids are already spoken
+				// for: step over them so everything after it keeps its own.
+				*next += uintptr(len(flatten(item.Children)))
+				continue
+			}
+			appendItems(sub, item.Children, next)
+			flags := uintptr(mfString | mfPopup)
+			if item.Disabled {
+				flags |= mfGrayed
+			}
+			procAppendMenu.Call(hmenu, flags, sub, uintptr(unsafe.Pointer(label)))
+			runtime.KeepAlive(label)
+			continue
+		}
+
+		flags := uintptr(mfString)
+		if item.Disabled {
+			flags |= mfGrayed
+		}
+		if item.Checked {
+			flags |= mfChecked
+		}
+		procAppendMenu.Call(hmenu, flags, id, uintptr(unsafe.Pointer(label)))
+		runtime.KeepAlive(label)
+		if item.Bold && bold == 0 {
+			bold = id
+		}
+	}
+	// A default belongs to the menu it was marked in, so an item marked inside
+	// a submenu does not become the one a double-click on the icon runs.
+	if bold != 0 {
+		procSetMenuDefaultItem.Call(hmenu, bold, 0)
 	}
 }
 
 // runDefault runs what a double-click on the icon means: the bold item.
 func (s *runState) runDefault() {
-	for _, item := range s.items() {
+	for _, item := range flatten(s.items()) {
 		if item.Bold && item.Do != nil {
 			go item.Do()
 			return

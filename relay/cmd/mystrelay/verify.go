@@ -44,6 +44,9 @@ func cmdStatus(args []string) error {
 	if t.Detail != "" {
 		fmt.Printf("  detail       %s\n", t.Detail)
 	}
+	if rep.Exit != nil {
+		fmt.Printf("  exit type    %s\n", exitTypeNames(rep.Exit.IPTypes))
+	}
 	fmt.Printf("  kill switch  open=%v strict=%v  admitted=%d refused=%d active=%d\n",
 		k.Open, k.Strict, k.Admitted, k.Refused, k.Active)
 	if k.Reason != "" {
@@ -177,6 +180,9 @@ type statusReport struct {
 		Total    meterReport `json:"total"`
 		Sessions uint64      `json:"sessions_total"`
 	} `json:"usage"`
+	Exit *struct {
+		IPTypes []string `json:"ip_types"`
+	} `json:"exit"`
 	Endpoints []struct {
 		Name string `json:"name"`
 		Addr string `json:"addr"`

@@ -187,19 +187,28 @@ func (t *Tray) refreshMenu() {
 }
 
 // render is the menu as one comparable string, so "has anything changed?" does
-// not need a field-by-field walk of two trees.
+// not need a field-by-field walk of two trees. Submenus are indented into it:
+// a mark moving from one exit type to another changes nothing at the top level,
+// and a panel that was not told would go on showing the old one.
 func render(items []Item) string {
 	var b strings.Builder
-	for _, item := range items {
-		switch {
-		case item.Separator:
-			b.WriteString("---\n")
-		case item.Disabled:
-			b.WriteString("- " + item.Label + "\n")
-		default:
-			b.WriteString("* " + item.Label + "\n")
+	var walk func([]Item, string)
+	walk = func(list []Item, indent string) {
+		for _, item := range list {
+			switch {
+			case item.Separator:
+				b.WriteString(indent + "---\n")
+			case item.Disabled:
+				b.WriteString(indent + "- " + item.Label + "\n")
+			case item.Checked:
+				b.WriteString(indent + "x " + item.Label + "\n")
+			default:
+				b.WriteString(indent + "* " + item.Label + "\n")
+			}
+			walk(item.Children, indent+"  ")
 		}
 	}
+	walk(items, "")
 	return b.String()
 }
 
@@ -210,18 +219,41 @@ func (t *Tray) snapshot() ([]Item, uint32) {
 	return t.items, t.revision
 }
 
-// menuItem renders one item as a dbusmenu node: an id, its properties, and the
-// children it does not have.
+// menuItem renders one item as a dbusmenu node: an id and its properties. The
+// children are left to the caller, which is the only part that differs between
+// the whole layout and the flat answers about single items.
 func menuItem(id int32, item Item) any {
 	props := map[string]variant{}
-	if item.Separator {
+	switch {
+	case item.Separator:
 		props["type"] = vs("separator")
-	} else {
+	default:
 		props["label"] = vs(item.Label)
-		props["enabled"] = vb(!item.Disabled && item.Do != nil)
+		props["enabled"] = vb(!item.Disabled && (item.Do != nil || len(item.Children) > 0))
 		props["visible"] = vb(true)
+		if len(item.Children) > 0 {
+			props["children-display"] = vs("submenu")
+		}
+		if item.Checked {
+			// A group of alternatives: the mark says which one is in force, so
+			// it is a radio rather than a tick somebody could clear.
+			props["toggle-type"] = vs("radio")
+			props["toggle-state"] = vi(1)
+		}
 	}
 	return []any{id, props, []any{}}
+}
+
+// node renders one item and everything below it, numbering depth-first from
+// next so the ids match what flatten hands back when a panel names one.
+func node(item Item, next *int32) any {
+	*next++
+	base := menuItem(*next, item).([]any)
+	children := make([]any, 0, len(item.Children))
+	for _, child := range item.Children {
+		children = append(children, variant{Sig: "(ia{sv}av)", V: node(child, next)})
+	}
+	return []any{base[0], base[1], children}
 }
 
 // layout is the whole menu in the shape GetLayout answers with: a root item
@@ -229,8 +261,9 @@ func menuItem(id int32, item Item) any {
 func (t *Tray) layout() (uint32, any) {
 	items, revision := t.snapshot()
 	children := make([]any, 0, len(items))
-	for i, item := range items {
-		children = append(children, variant{Sig: "(ia{sv}av)", V: menuItem(int32(i+1), item)})
+	next := int32(0)
+	for _, item := range items {
+		children = append(children, variant{Sig: "(ia{sv}av)", V: node(item, &next)})
 	}
 	root := []any{
 		int32(0),
@@ -244,11 +277,12 @@ func (t *Tray) layout() (uint32, any) {
 // action that opens a dialog or waits on the network does not hold up the bus.
 func (t *Tray) activate(id int32) {
 	items, _ := t.snapshot()
+	flat := flatten(items)
 	i := int(id) - 1
-	if i < 0 || i >= len(items) {
+	if i < 0 || i >= len(flat) {
 		return
 	}
-	if do := items[i].Do; do != nil && !items[i].Disabled {
+	if do := flat[i].Do; do != nil && !flat[i].Disabled {
 		go do()
 	}
 }
@@ -257,7 +291,7 @@ func (t *Tray) activate(id int32) {
 // marks as its default.
 func (t *Tray) activateDefault() {
 	items, _ := t.snapshot()
-	for _, item := range items {
+	for _, item := range flatten(items) {
 		if item.Bold && item.Do != nil {
 			go item.Do()
 			return
@@ -494,21 +528,23 @@ func (t *Tray) menuCall(c *conn, m *message) {
 
 	case "GetGroupProperties":
 		items, _ := t.snapshot()
-		out := make([]any, 0, len(items))
-		for i, item := range items {
-			node := menuItem(int32(i+1), item).([]any)
-			out = append(out, []any{node[0], node[1]})
+		flat := flatten(items)
+		out := make([]any, 0, len(flat))
+		for i, item := range flat {
+			fields := menuItem(int32(i+1), item).([]any)
+			out = append(out, []any{fields[0], fields[1]})
 		}
 		c.reply(m, "a(ia{sv})", out)
 
 	case "GetProperty":
 		items, _ := t.snapshot()
+		flat := flatten(items)
 		if len(args) >= 2 {
 			id, _ := args[0].(int32)
 			name, _ := args[1].(string)
 			i := int(id) - 1
-			if i >= 0 && i < len(items) {
-				props := menuItem(id, items[i]).([]any)[1].(map[string]variant)
+			if i >= 0 && i < len(flat) {
+				props := menuItem(id, flat[i]).([]any)[1].(map[string]variant)
 				if v, ok := props[name]; ok {
 					c.reply(m, "v", v)
 					return

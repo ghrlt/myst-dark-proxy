@@ -124,6 +124,11 @@ type Tunnel struct {
 	// avoid is the provider the next pick should move away from, set when an
 	// exit change is asked for by hand.
 	avoid string
+	// ipTypes is the live half of the exit policy: which kinds of exit address
+	// are acceptable. It starts as EXIT_IP_TYPE and is what changes when the
+	// tray or the CLI asks for a different kind of exit, so the setting can be
+	// moved without restarting the relay and losing the session with it.
+	ipTypes []string
 }
 
 // New builds a tunnel. It does not contact the node; call Run for that.
@@ -145,6 +150,7 @@ func New(opt Options) *Tunnel {
 		bc:           tunnel.NewBroadcaster(),
 		upstreamPort: opt.ProxyPort,
 		cooldown:     map[string]time.Time{},
+		ipTypes:      append([]string(nil), opt.Exit.IPTypes...),
 	}
 }
 
@@ -717,7 +723,7 @@ func (t *Tunnel) portOpen(ctx context.Context, port int, timeout time.Duration) 
 
 // pickProposal applies the exit policy and returns the best available offer.
 func (t *Tunnel) pickProposal(ctx context.Context) (*tequilapi.Proposal, error) {
-	policy := t.opt.Exit
+	policy := t.policy()
 	serviceType := policy.ServiceType
 	if serviceType == "" {
 		serviceType = "wireguard"

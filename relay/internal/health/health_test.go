@@ -26,6 +26,8 @@ type fakeTunnel struct {
 	rotates  bool
 	balance  tunnel.Balance
 	balError error
+	ipTypes  []string
+	setErr   error
 }
 
 func (f *fakeTunnel) Name() string              { return "fake" }
@@ -54,6 +56,14 @@ func (f *fakeTunnel) Rotate(reason string) bool {
 }
 func (f *fakeTunnel) Balance(context.Context) (tunnel.Balance, error) {
 	return f.balance, f.balError
+}
+func (f *fakeTunnel) ExitTypes() []string { return f.ipTypes }
+func (f *fakeTunnel) SetExitTypes(_ context.Context, types []string) ([]string, int, error) {
+	if f.setErr != nil {
+		return nil, 0, f.setErr
+	}
+	f.ipTypes = types
+	return types, 42, nil
 }
 
 func newServer(t *testing.T, token string, stop func()) (*httptest.Server, *fakeTunnel) {
@@ -251,5 +261,96 @@ func TestStopAnswersBeforeStopping(t *testing.T) {
 	case <-stopped:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the relay was never told to stop")
+	}
+}
+
+// Choosing a kind of exit is the setting and the move together: a relay sitting
+// on a hosting exit when it is told to use residential ones has been asked
+// about the traffic it is carrying now, not about the next session.
+func TestChoosingAnExitTypeLeavesAnExitThatNoLongerFits(t *testing.T) {
+	srv, tun := newServer(t, secret, func() {})
+	tun.status = tunnel.Status{State: tunnel.StateUp, IPType: "hosting"}
+
+	resp := do(t, srv, http.MethodPost, "/control/exit-type?type=residential",
+		map[string]string{controlHeader: secret})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("exit-type: got %d, want 202", resp.StatusCode)
+	}
+	var out struct {
+		IPTypes   []string `json:"ip_types"`
+		Providers int      `json:"providers"`
+		Changing  bool     `json:"changing"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.IPTypes) != 1 || out.IPTypes[0] != "residential" {
+		t.Errorf("applied: got %v, want [residential]", out.IPTypes)
+	}
+	if out.Providers != 42 {
+		t.Errorf("providers: got %d, want the count the tunnel reported", out.Providers)
+	}
+	if !out.Changing {
+		t.Error("a hosting exit does not satisfy a residential policy; it should have been left")
+	}
+	select {
+	case <-tun.rotated:
+	default:
+		t.Error("the tunnel was never asked to move")
+	}
+}
+
+// An exit that already satisfies the new policy is kept. Rotating off it would
+// be a session bought to arrive where the relay already was.
+func TestAnExitThatAlreadyFitsIsKept(t *testing.T) {
+	srv, tun := newServer(t, secret, func() {})
+	tun.status = tunnel.Status{State: tunnel.StateUp, IPType: "residential"}
+
+	resp := do(t, srv, http.MethodPost, "/control/exit-type?type=residential",
+		map[string]string{controlHeader: secret})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("exit-type: got %d, want 202", resp.StatusCode)
+	}
+	select {
+	case reason := <-tun.rotated:
+		t.Errorf("the exit already fits, but the tunnel was asked to move: %s", reason)
+	default:
+	}
+}
+
+// A policy the tunnel refuses - nothing on the network matches it - must not be
+// applied, and must say why rather than leaving the relay with nowhere to go.
+func TestARefusedExitTypeIsNotApplied(t *testing.T) {
+	srv, tun := newServer(t, secret, func() {})
+	tun.ipTypes = []string{"residential"}
+	tun.setErr = errors.New("no provider offers that right now")
+
+	resp := do(t, srv, http.MethodPost, "/control/exit-type?type=quantum_relay",
+		map[string]string{controlHeader: secret})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("exit-type: got %d, want 422", resp.StatusCode)
+	}
+	select {
+	case <-tun.rotated:
+		t.Error("a refused policy must not move the relay off a working exit")
+	default:
+	}
+	if len(tun.ipTypes) != 1 || tun.ipTypes[0] != "residential" {
+		t.Errorf("policy after a refusal: got %v, want the one it had", tun.ipTypes)
+	}
+}
+
+// The status document carries the policy in force so a client can show it and
+// mark it, and an empty list is "any kind" rather than a missing answer.
+func TestStatusCarriesTheExitPolicy(t *testing.T) {
+	srv, tun := newServer(t, secret, func() {})
+	tun.ipTypes = []string{"cellular"}
+
+	var rep Report
+	if err := json.NewDecoder(do(t, srv, http.MethodGet, "/status", nil).Body).Decode(&rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Exit == nil || len(rep.Exit.IPTypes) != 1 || rep.Exit.IPTypes[0] != "cellular" {
+		t.Fatalf("exit: got %+v, want cellular", rep.Exit)
 	}
 }

@@ -125,10 +125,19 @@ menu:
 - **Balance** - what the identity has left, its registration status and its
   payment channel. Top it up in the Mysterium app: this service spends an
   identity, it does not fund one.
-- **Change exit node** - leave this provider and pick another. The one being
+- **Change exit node** - a submenu, because the decision comes at two scales.
+  **Change exit node now** leaves this provider and picks another; the one being
   left is set aside for the next choice, so you get a different exit unless your
-  exit policy leaves only one. Streams open at that moment are dropped, the same
-  as any other time the tunnel goes away; the next connection uses the new exit.
+  exit policy leaves only one. Below it, **kind of exit address** - residential,
+  cellular, business, hosting, a CDN, or any - with the one in force marked.
+  Choosing one narrows every exit from then on, says how many providers that
+  leaves, and moves off the current exit when it is not one of them. A kind the
+  network has no providers for right now is refused rather than applied, so the
+  relay is never left with nowhere to go. `EXIT_IP_TYPE` sets what it starts as
+  and a restart returns to it; this moves it while the relay runs.
+
+  Streams open when the exit changes are dropped, the same as any other time
+  the tunnel goes away; the next connection uses the new exit.
 - **Restart relay** / **Stop relay** - the relay is asked to shut down properly
   rather than killed, because it is what stops the Mysterium node; a node left
   behind holds the port its replacement needs.

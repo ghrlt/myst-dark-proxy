@@ -146,6 +146,21 @@ func (c *relayClient) rotate(ctx context.Context, reason string) (changed bool, 
 	return out.Changing, out.Detail, nil
 }
 
+// exitType narrows the relay's choice of exit to certain kinds of address, and
+// returns how many providers are left and whether the current exit was left.
+func (c *relayClient) exitType(ctx context.Context, types []string) (applied []string, providers int, changed bool, err error) {
+	var out struct {
+		IPTypes   []string `json:"ip_types"`
+		Providers int      `json:"providers"`
+		Changing  bool     `json:"changing"`
+	}
+	path := "/control/exit-type?type=" + urlValue(strings.Join(types, ","))
+	if err := c.call(ctx, http.MethodPost, path, true, &out); err != nil {
+		return nil, 0, false, err
+	}
+	return out.IPTypes, out.Providers, out.Changing, nil
+}
+
 func (c *relayClient) stop(ctx context.Context) error {
 	return c.call(ctx, http.MethodPost, "/control/stop", true, nil)
 }
@@ -268,6 +283,81 @@ func awaitExit(ctx context.Context, client *relayClient) *statusReport {
 		}
 	}
 	return nil
+}
+
+// cmdExitType is the command line's half of the tray's exit-type submenu.
+func cmdExitType(args []string) error {
+	fs := newFlagSet("exit-type")
+	cfgPath := fs.String("config", "", "path to config.env")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	client := newRelayClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// With nothing to set, this is a question rather than an instruction: say
+	// what is in force and what could be asked for instead.
+	if fs.NArg() == 0 {
+		rep, err := client.status(ctx)
+		if err != nil {
+			return notRunning(err)
+		}
+		fmt.Printf("\n  exit type    %s\n", exitTypeLine(rep))
+		if rep.Tunnel.IPType != "" {
+			fmt.Printf("  on now       %s\n", config.ExitTypeLabel(rep.Tunnel.IPType))
+		}
+		fmt.Printf("\n  set one with: %s exit-type <type>\n", exeName())
+		fmt.Printf("  types:        any, %s\n\n", strings.Join(exitTypeValues(), ", "))
+		return nil
+	}
+
+	types := strings.Split(strings.Join(fs.Args(), ","), ",")
+	applied, providers, changed, err := client.exitType(ctx, types)
+	if err != nil {
+		return notRunning(err)
+	}
+	fmt.Printf("exit type: %s (%d providers)\n", exitTypeNames(applied), providers)
+	if !changed {
+		return nil
+	}
+	fmt.Println("leaving the current exit; it is not one of those")
+	if rep := awaitExit(ctx, client); rep != nil {
+		fmt.Printf("  exit %s  %s %s  via %s\n",
+			orDash(rep.Tunnel.ExitIP), orDash(rep.Tunnel.Country), orDash(rep.Tunnel.IPType), short(rep.Tunnel.ProviderID))
+	}
+	return nil
+}
+
+// exitTypeLine renders the policy in force for a person reading it.
+func exitTypeLine(rep *statusReport) string {
+	if rep.Exit == nil {
+		return "any (this relay cannot narrow it)"
+	}
+	return exitTypeNames(rep.Exit.IPTypes)
+}
+
+func exitTypeNames(types []string) string {
+	if len(types) == 0 {
+		return "any"
+	}
+	out := make([]string, 0, len(types))
+	for _, t := range types {
+		out = append(out, config.ExitTypeLabel(t))
+	}
+	return strings.Join(out, ", ")
+}
+
+func exitTypeValues() []string {
+	out := make([]string, 0, len(config.ExitTypes))
+	for _, t := range config.ExitTypes {
+		out = append(out, t.Value)
+	}
+	return out
 }
 
 func cmdBalance(args []string) error {

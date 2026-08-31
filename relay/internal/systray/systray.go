@@ -42,9 +42,43 @@ type Item struct {
 	Disabled  bool
 	// Bold marks the default item: the one a double-click on the icon runs.
 	Bold bool
+	// Checked marks the item in force among alternatives - the exit type being
+	// used, out of the ones on offer. Both desktops draw it as a radio mark,
+	// which is what a group of alternatives should look like.
+	Checked bool
+	// Children turn the item into a submenu. Neither desktop runs the action of
+	// an item that opens one, so an item with children is a place to open and
+	// not a thing to do; put the action on a child.
+	Children []Item
 	// Do is run on a goroutine of its own, so an action that opens a dialog or
 	// waits on the network does not freeze the icon it was started from.
 	Do func()
+}
+
+// Submenu is an item that opens onto others.
+func Submenu(label string, children ...Item) Item {
+	return Item{Label: label, Children: children}
+}
+
+// flatten numbers a menu depth-first - an item, then its children, then its
+// next sibling - and returns the items in that order, so the item at position n
+// is the one both desktops call id n+1.
+//
+// Numbering is shared rather than done twice because the two halves that have
+// to agree are far apart: one draws the menu, the other is handed an id back
+// when something in it is clicked. A menu drawn in one order and read in
+// another runs the wrong line.
+func flatten(items []Item) []Item {
+	var out []Item
+	var walk func([]Item)
+	walk = func(list []Item) {
+		for _, item := range list {
+			out = append(out, item)
+			walk(item.Children)
+		}
+	}
+	walk(items)
+	return out
 }
 
 // Separator is the divider between groups of menu items.

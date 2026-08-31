@@ -83,6 +83,8 @@ mystrelay.exe tray      # put a status icon in the notification area
 mystrelay.exe status    # what it is doing right now, and what it has cost
 mystrelay.exe balance   # what the identity paying for the exits has left
 mystrelay.exe rotate    # leave this exit node and pick another one
+mystrelay.exe exit-type residential   # only use exits of that kind, from now on
+mystrelay.exe exit-type              # show which kind is in force, and the rest
 mystrelay.exe stop      # stop the running relay
 mystrelay.exe verify    # prove traffic leaves through the exit, not through you
 mystrelay.exe update    # check for a newer release and install it over itself
@@ -94,10 +96,13 @@ mystrelay.exe autostart install -scope boot    # before sign-in, as SYSTEM (admi
 A logon registration starts the **notification-area icon**, and the icon starts
 the relay behind it, so a desktop install is one thing you can see and steer
 rather than a hidden background process. Right-click it for status, usage,
-MYST balance, a different exit node, and restart or stop; the colour says what
-it is doing at a glance - green carrying, blue resting between clients, amber
-building a session, red refusing, grey not running. `-tray=false` on the
-autostart command goes back to launching the relay alone.
+MYST balance, restart or stop, and **Change exit node**, which opens onto both
+halves of that decision: leave this exit now, or pick the *kind* of exit to use
+from here on - residential, cellular, hosting, a CDN - with the one in force
+marked. The colour says what it is doing at a glance - green carrying, blue
+resting between clients, amber building a session, red refusing, grey not
+running. `-tray=false` on the autostart command goes back to launching the
+relay alone.
 
 An autostart registration made before v0.5.0 has no icon in it, and updating
 the binary does not change what an already registered task runs. The relay
@@ -190,10 +195,11 @@ are kept by the relay.
 
 ### Controls
 
-Three endpoints take instructions rather than answering questions:
-`/control/rotate` moves to a different exit, `/control/balance` reads what the
-identity has left, and `/control/stop` shuts the relay down. They are what the
-tray icon and the `rotate`, `balance` and `stop` commands use.
+Four endpoints take instructions rather than answering questions:
+`/control/rotate` moves to a different exit, `/control/exit-type?type=` narrows
+which kinds of exit are acceptable, `/control/balance` reads what the identity
+has left, and `/control/stop` shuts the relay down. They are what the tray icon
+and the `rotate`, `exit-type`, `balance` and `stop` commands use.
 
 They are held to a tighter rule than the read-only endpoints: a caller must
 come from this machine and present the secret from `control.token`, written
@@ -218,7 +224,8 @@ wins). Full annotated list in [`.env.example`](.env.example).
 | `RELAY_ON_DEMAND` | open the session at the first client, not at startup |
 | `RELAY_SESSION_IDLE_TIMEOUT` | close a session that has carried nothing this long (`0` keeps it) |
 | `RELAY_ACTIVATION_TIMEOUT` | how long a client waits while its session is built |
-| `EXIT_COUNTRY`, `EXIT_IP_TYPE`, `EXIT_MIN_QUALITY`, `EXIT_MAX_LATENCY` | exit policy allow-lists |
+| `EXIT_COUNTRY`, `EXIT_MIN_QUALITY`, `EXIT_MAX_LATENCY` | exit policy allow-lists |
+| `EXIT_IP_TYPE` | what the exit address looks like: `residential`, `cellular`, `business`, `hosting`, `content_delivery_network` (`cdn`), `education`, `government`. The default the tray and `exit-type` move from |
 | `EXIT_PROVIDER_ID` | pin one provider, ignoring the filters |
 | `RELAY_ROTATE_EVERY` | change exit on a timer |
 | `RELAY_EXIT_CHECK_URL` | the egress proof; empty disables it (see caveats) |
@@ -364,7 +371,8 @@ RELAY_SESSION_IDLE_TIMEOUT=0     # and never close it
   its presence would produce a direct route.
 - **Exit nodes are untrusted third parties.** They see your traffic exactly as
   any VPN provider would. Use TLS. Quality varies wildly; `EXIT_MIN_QUALITY` and
-  `EXIT_IP_TYPE=residential` help.
+  `EXIT_IP_TYPE=residential` help. A hosting exit is the cheapest and the first
+  thing a site blocks; a residential one passes for a person at home.
 - **The egress proof makes one request of its own** per reconnect, to
   `RELAY_EXIT_CHECK_URL` (default `https://api.ipify.org`), through the tunnel.
   Setting it empty removes that request and the guarantee it provides.

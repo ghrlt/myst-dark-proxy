@@ -58,6 +58,8 @@ commands:
   status       Show what the running relay is doing, and what it has cost
   balance      Show what the identity paying for the exits has left
   rotate       Leave this exit node and pick another one now
+  exit-type    Show or set the kind of exit address to use (residential,
+               cellular, hosting, cdn, ...); "any" lifts the restriction
   stop         Stop the running relay
   tray         Put a status icon in the notification area (Windows, Linux)
   verify       Prove traffic leaves through the exit node, and that it stops
@@ -95,6 +97,8 @@ func main() {
 		err = cmdBalance(args)
 	case "rotate":
 		err = cmdRotate(args)
+	case "exit-type", "exit_type", "exittype":
+		err = cmdExitType(args)
 	case "stop":
 		err = cmdStop(args)
 	case "tray":

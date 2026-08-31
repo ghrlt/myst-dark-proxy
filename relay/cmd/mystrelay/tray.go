@@ -248,7 +248,7 @@ func (a *trayApp) menu() []systray.Item {
 		return append(items, systray.Item{Label: "Quit tray icon", Do: a.doQuit})
 	}
 
-	change := systray.Item{Label: "Change exit node", Do: a.doChangeExit}
+	change := systray.Item{Label: "Change exit node", Children: a.exitMenu(rep)}
 	restart := systray.Item{Label: "Restart relay", Do: a.doRestart}
 	stop := systray.Item{Label: "Stop relay", Do: a.doStop}
 	if !rep.Control {
@@ -256,6 +256,7 @@ func (a *trayApp) menu() []systray.Item {
 		// what is missing rather than offering buttons that answer 404.
 		reason := " (this relay takes no instructions)"
 		change.Disabled, restart.Disabled, stop.Disabled = true, true, true
+		change.Children = nil
 		change.Label += reason
 		restart.Label += reason
 		stop.Label += reason
@@ -277,6 +278,64 @@ func (a *trayApp) menu() []systray.Item {
 		items = append(items, systray.Item{Label: "Quit tray icon", Do: a.doQuit})
 	}
 	return items
+}
+
+// exitMenu is what opens off "Change exit node": move now, and the kind of
+// exit to move to.
+//
+// The two belong together because they are the same decision at two scales -
+// this exit is no good, and this kind of exit is no good - and because picking
+// a kind is only ever asked for by somebody looking at the exit they have. The
+// mark shows what is in force; EXIT_IP_TYPE is what it starts as.
+func (a *trayApp) exitMenu(rep *statusReport) []systray.Item {
+	items := []systray.Item{
+		{Label: "Change exit node now", Do: a.doChangeExit},
+	}
+	if rep.Exit == nil {
+		return items
+	}
+
+	current := rep.Exit.IPTypes
+	items = append(items, systray.Separator(), systray.Label("Kind of exit address"),
+		systray.Item{
+			Label:   "Any",
+			Checked: len(current) == 0,
+			Do:      a.chooseExitType(nil),
+		})
+	for _, t := range exitTypeChoices(current) {
+		items = append(items, systray.Item{
+			Label:   config.ExitTypeLabel(t),
+			Checked: containsFold(current, t),
+			Do:      a.chooseExitType([]string{t}),
+		})
+	}
+	return items
+}
+
+// exitTypeChoices are the types to offer: the ones this build knows about, plus
+// anything the policy already names that it does not - a type set in
+// EXIT_IP_TYPE from a newer network must still show as the one in force rather
+// than leaving the menu claiming "Any".
+func exitTypeChoices(current []string) []string {
+	out := make([]string, 0, len(config.ExitTypes)+len(current))
+	for _, t := range config.ExitTypes {
+		out = append(out, t.Value)
+	}
+	for _, t := range current {
+		if !containsFold(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func containsFold(list []string, v string) bool {
+	for _, s := range list {
+		if strings.EqualFold(s, v) {
+			return true
+		}
+	}
+	return false
 }
 
 func headlineFor(rep *statusReport) string {
@@ -322,6 +381,9 @@ func (a *trayApp) showStatus() {
 	}
 	if rep.Tunnel.Detail != "" {
 		fmt.Fprintf(&b, "detail         %s\n", rep.Tunnel.Detail)
+	}
+	if rep.Exit != nil {
+		fmt.Fprintf(&b, "exit type      %s\n", exitTypeNames(rep.Exit.IPTypes))
 	}
 	fmt.Fprintf(&b, "kill switch    %s\n", killSwitchLine(rep))
 	if rep.KillSwitch.Reason != "" {
@@ -439,6 +501,41 @@ func (a *trayApp) doChangeExit() {
 		return
 	}
 	icon.Notify("New exit node", exitLine(rep), false)
+}
+
+// chooseExitType narrows the relay to one kind of exit address, or to any kind
+// when types is empty.
+func (a *trayApp) chooseExitType(types []string) func() {
+	return func() {
+		// Traffic stopping while a new exit is found is what was just asked
+		// for, so it is not news worth a balloon.
+		defer a.deliberately()()
+
+		icon := a.tray()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+
+		applied, providers, changed, err := a.client.exitType(ctx, types)
+		if err != nil {
+			systray.Warn("Kind of exit address",
+				"The relay would not change to "+exitTypeNames(types)+".\n\n"+err.Error()+
+					"\n\nNothing was changed; the relay is still using what it was.")
+			return
+		}
+		a.poll()
+		if icon == nil {
+			return
+		}
+		summary := fmt.Sprintf("%s - %d providers to choose from.", exitTypeNames(applied), providers)
+		if !changed {
+			icon.Notify("Kind of exit address", summary+"\nThe exit in use already qualifies.", false)
+			return
+		}
+		icon.Notify("Kind of exit address", summary+"\nLeaving the current exit; another is being picked.", false)
+		if rep := awaitExit(ctx, a.client); rep != nil {
+			icon.Notify("New exit node", exitLine(rep), false)
+		}
+	}
 }
 
 func (a *trayApp) doStart() {
