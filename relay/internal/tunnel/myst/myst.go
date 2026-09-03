@@ -121,8 +121,10 @@ type Tunnel struct {
 	mu           sync.RWMutex
 	upstreamPort int
 	cooldown     map[string]time.Time // provider -> retry-after
-	// avoid is the provider the next pick should move away from, set when an
-	// exit change is asked for by hand.
+	// avoid is the provider an exit change is moving away from. It is held
+	// until a session is actually up rather than until the next pick, because
+	// a pick that failed to connect has moved nowhere: forgetting it there
+	// would let the retry settle straight back onto the exit that was left.
 	avoid string
 	// ipTypes is the live half of the exit policy: which kinds of exit address
 	// are acceptable. It starts as EXIT_IP_TYPE and is what changes when the
@@ -441,6 +443,9 @@ func (t *Tunnel) session(ctx context.Context) error {
 	status.ExitIP = ip
 	t.bc.Set(status)
 	t.sessions.Add(1)
+	// Landed. Whatever asked to leave the last exit has had its answer, so the
+	// provider it was moving away from is an ordinary candidate again.
+	t.clearAvoid()
 
 	t.log.Info("tunnel up",
 		"provider", prop.ProviderID,
@@ -503,7 +508,13 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-elapsed:
+			// Two mechanisms, because they answer different questions. The
+			// cooldown keeps this exit out of the running for a rotation
+			// interval's worth of picks; the avoidance is what guarantees the
+			// next session lands somewhere else, however many failed
+			// candidates the reconnect has to work through first.
 			t.log.Info("rotating exit", "after", t.opt.RotateEvery)
+			t.setAvoid(provider)
 			t.penalise(provider, t.opt.RotateEvery)
 			t.closeSession(tunnel.StateConnecting, "rotating exit")
 			return nil
@@ -590,15 +601,23 @@ func (t *Tunnel) setAvoid(provider string) {
 	t.avoid = provider
 }
 
-// takeAvoid reads and clears that exit. It applies to one pick only: a
-// provider refused forever on the strength of a single click would quietly
-// narrow the exit policy every time the button was pressed.
-func (t *Tunnel) takeAvoid() string {
+// avoiding reports the exit being moved away from, if any.
+func (t *Tunnel) avoiding() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.avoid
+}
+
+// clearAvoid forgets that exit, and is called once a session is up. It applies
+// to one move rather than forever: a provider refused for good on the strength
+// of a single click would quietly narrow the exit policy every time the button
+// was pressed. Clearing on arrival rather than on the pick is what makes the
+// move hold across a failed candidate - and it clears even when the arrival was
+// back on the same exit, which only happens when the policy left nothing else.
+func (t *Tunnel) clearAvoid() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	away := t.avoid
 	t.avoid = ""
-	return away
 }
 
 // closeSession asks the node to drop the session and records why the relay is
@@ -748,7 +767,7 @@ func (t *Tunnel) pickProposal(ctx context.Context) (*tequilapi.Proposal, error) 
 		return nil, fmt.Errorf("list proposals: %w", err)
 	}
 
-	candidates := t.without(t.filter(all, policy), t.takeAvoid())
+	candidates := t.without(t.filter(all, policy), t.avoiding())
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no provider matches the exit policy (%d offers seen; country=%v ip_type=%v quality>=%g)",
 			len(all), policy.Countries, policy.IPTypes, policy.MinQuality)
@@ -777,7 +796,7 @@ func (t *Tunnel) pickProposal(ctx context.Context) (*tequilapi.Proposal, error) 
 // match a single provider must still be able to connect: refusing to reconnect
 // at all is a worse answer than reconnecting to the same exit.
 func (t *Tunnel) without(candidates []tequilapi.Proposal, away string) []tequilapi.Proposal {
-	if away == "" || len(candidates) < 2 {
+	if away == "" || len(candidates) == 0 {
 		return candidates
 	}
 	kept := candidates[:0]
