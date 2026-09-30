@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -37,9 +38,11 @@ import (
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/frontend/raw"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/frontend/socks5"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/gate"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/guard"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/health"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/node"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/selfupdate"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/stats"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tequilapi"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel/myst"
@@ -180,6 +183,18 @@ func run(cfg *config.Config) error {
 	defer closeLog()
 	slog.SetDefault(log)
 
+	// A background process has no console to print a panic to, and until now
+	// nothing recovered one anyway: it just took the whole relay down without
+	// a trace. This is the last line of defence for a panic in run's own code,
+	// before anything below has had a chance to start a goroutine of its own -
+	// each of those is guarded separately, because a panic recovered here would
+	// only stop a goroutine that already isn't this one.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("recovered from panic", "component", "run", "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+
 	log.Info("myst-relay starting",
 		"version", version,
 		"identity", cfg.IdentityAddress,
@@ -192,7 +207,7 @@ func run(cfg *config.Config) error {
 	// that way. This is where that is noticed and put right, on a goroutine
 	// because it asks the machine's scheduler and nothing below waits on the
 	// answer.
-	go adoptStatusIcon(log)
+	guard.Go(log, "adopt status icon", func() { adoptStatusIcon(log) })
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -238,7 +253,7 @@ func run(cfg *config.Config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			fail("node", sup.Run(runCtx))
+			fail("node", guard.Run(log, "node", func() error { return sup.Run(runCtx) }))
 		}()
 	}
 
@@ -276,11 +291,20 @@ func run(cfg *config.Config) error {
 		Demand:         wants,
 		OnDemand:       cfg.OnDemand,
 		SessionIdle:    cfg.SessionIdle,
+		StatsFile:      cfg.StatsFile,
 		Logger:         log,
 	})
 
 	killSwitch := gate.New(ctx, cfg.StrictKillSwitch)
 	defer killSwitch.Shutdown()
+
+	if cfg.StatsFile != "" {
+		wg.Add(1)
+		guard.Go(log, "connection stats", func() {
+			defer wg.Done()
+			recordConnections(runCtx, killSwitch, cfg.StatsFile, statsTickInterval, log)
+		})
+	}
 
 	base := frontend.Base{
 		Dialer:      egress,
@@ -290,6 +314,7 @@ func run(cfg *config.Config) error {
 		IdleTimeout: cfg.IdleTimeout,
 		Demand:      wants,
 		ReadyWait:   cfg.ReadyTimeout,
+		MaxConns:    cfg.MaxConnections,
 	}
 
 	var frontends []frontend.Frontend
@@ -317,22 +342,23 @@ func run(cfg *config.Config) error {
 	// The tunnel drives the kill switch: the gate is open exactly while the
 	// egress path is usable, and closes the instant it is not.
 	wg.Add(1)
-	go func() {
+	guard.Go(log, "kill switch", func() {
 		defer wg.Done()
 		driveKillSwitch(runCtx, egress, killSwitch, wants != nil, log)
-	}()
+	})
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		fail("tunnel", egress.Run(runCtx))
+		fail("tunnel", guard.Run(log, "tunnel", func() error { return egress.Run(runCtx) }))
 	}()
 
 	for _, f := range frontends {
 		wg.Add(1)
 		go func(f frontend.Frontend) {
 			defer wg.Done()
-			fail("frontend "+f.Name(), f.Serve(runCtx))
+			name := "frontend " + f.Name()
+			fail(name, guard.Run(log, name, func() error { return f.Serve(runCtx) }))
 		}(f)
 	}
 
@@ -362,7 +388,7 @@ func run(cfg *config.Config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			fail("health", hs.Serve(runCtx))
+			fail("health", guard.Run(log, "health", func() error { return hs.Serve(runCtx) }))
 		}()
 	}
 
@@ -429,6 +455,46 @@ func driveKillSwitch(ctx context.Context, t tunnel.Tunnel, g *gate.Gate, onDeman
 			}
 			g.Close(reason)
 			log.Warn("kill switch closed", "reason", reason)
+		}
+	}
+}
+
+// statsTickInterval is how often recordConnections samples the kill switch's
+// running admitted/refused counters. It is also the finest resolution the
+// tray's "last hour" stats chart can show: short enough for that view to have
+// real shape to it, long enough that a year of ticks is still a few megabytes
+// at most.
+const statsTickInterval = 5 * time.Minute
+
+// recordConnections appends a periodic tick of how many client connections the
+// kill switch has admitted and refused since the previous one, so "View
+// stats" has connection counts to chart alongside session history. A tick
+// with nothing to report is not written at all - an idle relay should not
+// grow its stats file - and one last tick is written when ctx ends, so a run
+// shorter than the interval does not lose its trailing partial one.
+func recordConnections(ctx context.Context, g *gate.Gate, path string, interval time.Duration, log *slog.Logger) {
+	var lastAdmitted, lastRefused uint64
+	tick := func() {
+		s := g.Stats()
+		admitted, refused := s.Admitted-lastAdmitted, s.Refused-lastRefused
+		lastAdmitted, lastRefused = s.Admitted, s.Refused
+		if admitted == 0 && refused == 0 {
+			return
+		}
+		if err := stats.Append(path, stats.Record{Kind: "conn", At: time.Now(), Admitted: admitted, Refused: refused}); err != nil {
+			log.Warn("could not record connection stats", "err", err)
+		}
+	}
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			tick()
+			return
+		case <-t.C:
+			tick()
 		}
 	}
 }

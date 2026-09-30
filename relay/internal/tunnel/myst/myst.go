@@ -40,6 +40,7 @@ import (
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/config"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/stats"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tequilapi"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/upstream"
@@ -89,6 +90,11 @@ type Options struct {
 	// SessionIdle closes a session that has carried nothing for this long. 0
 	// keeps it open until it fails or the relay stops.
 	SessionIdle time.Duration
+
+	// StatsFile is where a record of each session that ends is appended -
+	// bytes carried, duration, cost, which exit - so a history survives the
+	// relay restarting. Empty disables it.
+	StatsFile string
 
 	Logger *slog.Logger
 }
@@ -455,7 +461,33 @@ func (t *Tunnel) session(ctx context.Context) error {
 		"upstream", net.JoinHostPort(t.opt.ProxyHost, strconv.Itoa(port)))
 
 	t.acct.begin()
+	defer t.finishSession(status)
 	return t.monitor(ctx, prop.ProviderID)
+}
+
+// finishSession closes the accounting span begun for status and, if a stats
+// file is configured, appends what the session carried and cost. This is the
+// one moment its whole story - what it moved, what it cost, which exit, how
+// long - is known all at once; monitor, by the time it returns, has already
+// moved the tunnel's status on to whatever comes next.
+func (t *Tunnel) finishSession(status tunnel.Status) {
+	f := t.acct.end()
+	if !f.ok || t.opt.StatsFile == "" {
+		return
+	}
+	if err := stats.Append(t.opt.StatsFile, stats.Record{
+		Kind:          "session",
+		At:            time.Now(),
+		Start:         f.Since,
+		Provider:      status.ProviderID,
+		Country:       status.Country,
+		IPType:        status.IPType,
+		BytesSent:     f.BytesSent,
+		BytesReceived: f.BytesReceived,
+		Wei:           weiString(f.Wei),
+	}); err != nil {
+		t.log.Warn("could not record session stats", "err", err)
+	}
 }
 
 // Rotate asks for a different exit now.
@@ -476,9 +508,6 @@ func (t *Tunnel) Rotate(reason string) bool {
 
 // monitor watches the live session and returns when it is no longer usable.
 func (t *Tunnel) monitor(ctx context.Context, provider string) error {
-	// The session is spent from here on, whichever way this returns.
-	defer t.acct.end()
-
 	ticker := time.NewTicker(t.opt.HealthInterval)
 	defer ticker.Stop()
 

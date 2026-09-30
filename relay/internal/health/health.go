@@ -216,6 +216,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	srv := &http.Server{
 		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Otherwise a panic net/http recovers from a handler - it recovers
+		// every one by default - logs to the standard "log" package's default
+		// writer, which is stderr: gone, on a relay with no console to show it.
+		ErrorLog: slog.NewLogLogger(s.Log.Handler(), slog.LevelError),
 	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", s.Listen)

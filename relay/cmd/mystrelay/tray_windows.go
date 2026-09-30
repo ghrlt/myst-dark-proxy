@@ -47,3 +47,12 @@ func supervisorStart() error {
 func supervisorStop() error {
 	return exec.Command("schtasks", "/end", "/tn", taskName).Run()
 }
+
+// openPath opens a file or folder the way double-clicking it would: Explorer
+// for a folder, or the file's own default handler. Start rather than Run,
+// because Explorer answers a launch like this with exit codes that mean
+// nothing - waiting on it would report a spurious failure on an open that
+// worked.
+func openPath(path string) error {
+	return exec.Command("explorer.exe", path).Start()
+}

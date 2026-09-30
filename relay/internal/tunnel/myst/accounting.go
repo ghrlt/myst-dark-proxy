@@ -63,18 +63,31 @@ func (a *accounting) observe(st tequilapi.Statistics) {
 	a.wei = st.Wei()
 }
 
-// end closes the session span and folds it into the totals.
-func (a *accounting) end() {
+// folded is what a session carried and cost, handed back by end so a caller
+// can record it rather than only add it to the running totals - which is all
+// fold itself, used for the recovery case in begin, needs it for.
+type folded struct {
+	ok            bool // false when there was no open session to fold
+	Since         time.Time
+	BytesSent     uint64
+	BytesReceived uint64
+	Wei           *big.Int
+}
+
+// end closes the session span, folds it into the totals, and reports what it
+// carried.
+func (a *accounting) end() folded {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.fold()
+	return a.fold()
 }
 
 // fold moves the current session into the totals. Callers hold the lock.
-func (a *accounting) fold() {
+func (a *accounting) fold() folded {
 	if !a.open {
-		return
+		return folded{}
 	}
+	f := folded{ok: true, Since: a.since, BytesSent: a.sent, BytesReceived: a.recv, Wei: orZero(a.wei)}
 	a.totalSent += a.sent
 	a.totalRecv += a.recv
 	if a.totalWei == nil {
@@ -85,6 +98,7 @@ func (a *accounting) fold() {
 	}
 	a.totalFor += time.Since(a.since)
 	a.open, a.sent, a.recv, a.wei = false, 0, 0, nil
+	return f
 }
 
 // snapshot renders the counters for the status document.

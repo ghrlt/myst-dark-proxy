@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -56,6 +57,10 @@ func (s *Server) Serve(ctx context.Context) error {
 		Handler:           http.HandlerFunc(s.route),
 		ReadHeaderTimeout: 30 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
+		// Otherwise a panic net/http recovers from a handler - it recovers
+		// every one by default - logs to the standard "log" package's default
+		// writer, which is stderr: gone, on a relay with no console to show it.
+		ErrorLog: slog.NewLogLogger(s.Log.Handler(), slog.LevelError),
 	}
 
 	var lc net.ListenConfig
@@ -183,7 +188,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Debug("connect open", "target", target)
-	frontend.Splice(sess.Context, client, upstream, s.IdleTimeout)
+	frontend.Splice(s.Log, sess.Context, client, upstream, s.IdleTimeout)
 }
 
 func (s *Server) forward(w http.ResponseWriter, r *http.Request) {

@@ -35,12 +35,20 @@ against a digest recorded in the binary, and unpacks it.
 Everything lands in `%LOCALAPPDATA%\myst-relay\`:
 
 ```
-config.env      settings - plain text, edit freely
-identity.json   a copy of your keystore; the original is untouched
-node\           the Mysterium node binary
-node-data\      the node's database, keystore and logs
-logs\relay.log  the relay's log
+config.env          settings - plain text, edit freely
+identity.json       a copy of your keystore; the original is untouched
+node\               the Mysterium node binary
+node-data\          the node's database, keystore and logs
+logs\relay.log      the relay's log
+logs\crash.log      empty unless the relay itself crashed; see below
+logs\sessions.jsonl a line per session - bytes carried, duration, cost, exit
 ```
+
+`sessions.jsonl` is what the tray's **View stats** menu reads: one line of
+JSON per session that ended, plus a periodic line of how many client
+connections were admitted or refused. It has nothing to do with `relay.log` -
+that is for diagnosing the relay itself, this is history that is meant to
+outlive a restart. `RELAY_STATS_FILE=""` in `config.env` turns it off.
 
 > **SmartScreen** will warn that the publisher is unknown, because the binary is
 > unsigned. *More info -> Run anyway*.
@@ -69,7 +77,8 @@ sign-in and runs as you, so an ordinary terminal is all it takes. What it
 launches is the **status icon**, and the icon starts the relay behind it - one
 thing in the notification area rather than a hidden process with no way to see
 it. Nothing appears on your desktop but the icon; `logs\relay.log` still has the
-detail.
+detail, and `logs\crash.log` has anything the relay could not log itself
+because it crashed outright - that file stays empty otherwise.
 
 Add `-tray=false` to launch the relay on its own instead, the way earlier
 versions did.
@@ -351,8 +360,11 @@ leaves from the exit node rather than from your own address.
 ## 10. Troubleshooting
 
 **Nothing loads and `status` says the relay is not running** - check
-`%LOCALAPPDATA%\myst-relay\logs\relay.log`. Run `mystrelay.exe run` in a
-terminal to watch it live.
+`%LOCALAPPDATA%\myst-relay\logs\relay.log`, and `logs\crash.log` if `relay.log`
+stops abruptly with no sign of a normal shutdown: that is where the relay's own
+crash output goes, since a process started at sign-in has no console to print
+it to otherwise. It stays empty except right after a crash. Run `mystrelay.exe
+run` in a terminal to watch it live.
 
 **"port 127.0.0.1:4050 is already in use"** - another Mysterium app is running,
 or a node from a previous run survived. The relay clears its own leftovers

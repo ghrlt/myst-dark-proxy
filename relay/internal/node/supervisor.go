@@ -67,17 +67,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}
 
-	if err := s.clearStale(); err != nil {
-		return err
-	}
-
 	backoff := s.RestartMin
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		start := time.Now()
-		err := s.once(ctx)
+		err := s.runOnce(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -94,6 +90,20 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 		backoff = min(backoff*2, s.RestartMax)
 	}
+}
+
+// runOnce clears whatever a crashed previous run left behind and starts the
+// node. clearStale failing is folded into the same retry loop as the node
+// itself exiting, rather than being fatal to the whole relay: a port a killed
+// node has not yet let go of is exactly the kind of thing more time fixes, and
+// under load - the condition a crash is more likely to happen under in the
+// first place - "more time" can be longer than one fixed wait is willing to
+// give it.
+func (s *Supervisor) runOnce(ctx context.Context) error {
+	if err := s.clearStale(); err != nil {
+		return err
+	}
+	return s.once(ctx)
 }
 
 func (s *Supervisor) once(ctx context.Context) error {
@@ -203,14 +213,27 @@ func (s *Supervisor) clearStale() error {
 	if err == nil {
 		_ = proc.Kill()
 	}
-	for range 50 {
+	// A killed process does not always let go of its listening socket the
+	// instant it dies - Windows in particular can lag here under load, which is
+	// also exactly when a node is more likely to have been killed rather than
+	// shut down cleanly in the first place. This is generous rather than fussy
+	// about it: runOnce folds a failure here into the supervisor's own
+	// restart-with-backoff loop, so giving up too early costs nothing but a
+	// warning and another lap, while giving up too late holds up every attempt
+	// to free the port during this one.
+	const (
+		clearStaleWait  = 200 * time.Millisecond
+		clearStaleTries = 150 // 30s
+	)
+	for range clearStaleTries {
 		if !portBusy(addr) {
 			s.removePID()
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(clearStaleWait)
 	}
-	return fmt.Errorf("could not free %s; stop the leftover node process (pid %d) by hand", addr, pid)
+	return fmt.Errorf("could not free %s after %s; stop the leftover node process (pid %d) by hand",
+		addr, time.Duration(clearStaleTries)*clearStaleWait, pid)
 }
 
 func portBusy(addr string) bool {

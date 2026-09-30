@@ -15,6 +15,7 @@ import (
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/demand"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/gate"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/guard"
 )
 
 // Dialer is the egress capability a frontend needs. tunnel.Tunnel satisfies it.
@@ -47,10 +48,23 @@ type Base struct {
 	// built for it. It applies only while the kill switch is armed - shut with
 	// a session coming - so a failed tunnel still refuses immediately.
 	ReadyWait time.Duration
+
+	// MaxConns bounds how many connections this frontend serves at once. Each
+	// one holds two goroutines and two sockets for as long as it is open, so
+	// with nothing bounding it a client (or a lot of ordinary ones under heavy
+	// use) can grow that without limit. 0 means unbounded.
+	MaxConns int
 }
 
 // Accept runs the accept loop on Listen, invoking handle for each client. It
 // returns when ctx is cancelled.
+//
+// Each client is handled on its own goroutine, recovered: one connection
+// hitting a bug is that connection failing, not every session this relay is
+// carrying. With MaxConns set, a connection beyond the limit waits for one to
+// free up before it is even accepted, so a client under heavy load queues in
+// the kernel's own backlog rather than this process growing goroutines and
+// sockets without bound.
 func (b *Base) Accept(ctx context.Context, name string, handle func(context.Context, net.Conn)) error {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", b.Listen)
@@ -64,12 +78,27 @@ func (b *Base) Accept(ctx context.Context, name string, handle func(context.Cont
 		_ = ln.Close()
 	}()
 
+	var sem chan struct{}
+	if b.MaxConns > 0 {
+		sem = make(chan struct{}, b.MaxConns)
+	}
+
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
 	for {
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return nil
+			}
+		}
 		conn, err := ln.Accept()
 		if err != nil {
+			if sem != nil {
+				<-sem
+			}
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -80,18 +109,23 @@ func (b *Base) Accept(ctx context.Context, name string, handle func(context.Cont
 			return err
 		}
 		wg.Add(1)
-		go func() {
+		guard.Go(b.Log, name+" connection", func() {
 			defer wg.Done()
 			defer conn.Close()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
 			handle(ctx, conn)
-		}()
+		})
 	}
 }
 
 // Splice copies bytes in both directions until either side finishes or the
 // session context is cancelled. Cancellation is what makes the strict kill
 // switch bite: when the tunnel drops, every in-flight stream is closed here.
-func Splice(ctx context.Context, a, b net.Conn, idle time.Duration) {
+// A panic copying one direction is recovered and logged against log rather
+// than taking down whatever else this process is carrying.
+func Splice(log *slog.Logger, ctx context.Context, a, b net.Conn, idle time.Duration) {
 	done := make(chan struct{})
 	defer close(done)
 
@@ -119,8 +153,8 @@ func Splice(ctx context.Context, a, b net.Conn, idle time.Duration) {
 			_ = dst.SetReadDeadline(time.Now())
 		}
 	}
-	go cp(a, b)
-	go cp(b, a)
+	guard.Go(log, "splice", func() { cp(a, b) })
+	guard.Go(log, "splice", func() { cp(b, a) })
 	wg.Wait()
 }
 

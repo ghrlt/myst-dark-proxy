@@ -5,14 +5,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/config"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/stats"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/systray"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel"
 )
 
 // The tray icon is the desktop face of the relay.
@@ -239,6 +244,8 @@ func (a *trayApp) menu() []systray.Item {
 		systray.Item{Label: "Status...", Bold: true, Do: a.showStatus},
 		systray.Item{Label: "Usage...", Do: a.showUsage},
 		systray.Item{Label: "Balance...", Do: a.showBalance},
+		systray.Item{Label: "View stats", Children: a.statsMenu()},
+		systray.Item{Label: "View logs", Do: a.doViewLogs},
 		systray.Separator())
 
 	if rep == nil {
@@ -471,6 +478,188 @@ func (a *trayApp) showBalance() {
 	systray.Show("MYST balance", b.String())
 }
 
+// doViewLogs opens the folder the relay's own logs live in, in whatever the
+// desktop associates with a folder - Explorer, a file manager - rather than
+// showing them in a dialog: relay.log can run to megabytes, and crash.log,
+// node.log and relay.log are easier to tell apart side by side than pasted one
+// after another.
+func (a *trayApp) doViewLogs() {
+	dir := logsDir(a.cfg, a.cfgPath)
+	if err := openPath(dir); err != nil {
+		systray.Warn("View logs", "Could not open "+dir+".\n\n"+err.Error())
+	}
+}
+
+// logsDir is where the relay's own logs live: the directory relay.log is in
+// when RELAY_LOG_FILE names one, and otherwise wherever a crash this build
+// could not log any other way still lands - the two normally coincide.
+func logsDir(cfg *config.Config, cfgPath string) string {
+	if cfg.LogFile != "" {
+		return filepath.Dir(cfg.LogFile)
+	}
+	return filepath.Join(filepath.Dir(cfgPath), "logs")
+}
+
+// --- stats -------------------------------------------------------------
+
+// statsMenu is what opens off "View stats": four fixed lookback windows and
+// one that reaches back to the oldest record on hand, whatever that turns out
+// to be.
+func (a *trayApp) statsMenu() []systray.Item {
+	return []systray.Item{
+		{Label: "Last hour", Do: func() { a.doViewStats(stats.Hour) }},
+		{Label: "Last 24 hours", Do: func() { a.doViewStats(stats.Day) }},
+		{Label: "Last 7 days", Do: func() { a.doViewStats(stats.Week) }},
+		{Label: "Last 30 days", Do: func() { a.doViewStats(stats.Month) }},
+		{Label: "All time", Do: a.doViewAllTimeStats},
+	}
+}
+
+// loadStats reads the relay's own history of what it has carried - the same
+// file it writes to, so nothing here needs the relay to be running.
+func (a *trayApp) loadStats() ([]stats.Record, error) {
+	if a.cfg.StatsFile == "" {
+		return nil, fmt.Errorf("stats logging is off (RELAY_STATS_FILE is empty)")
+	}
+	return stats.Load(a.cfg.StatsFile)
+}
+
+func (a *trayApp) doViewStats(w stats.Window) {
+	records, err := a.loadStats()
+	if err != nil {
+		systray.Warn("View stats", err.Error())
+		return
+	}
+	a.showStats(w, records)
+}
+
+func (a *trayApp) doViewAllTimeStats() {
+	records, err := a.loadStats()
+	if err != nil {
+		systray.Warn("View stats", err.Error())
+		return
+	}
+	a.showStats(stats.AllTime(records, time.Now()), records)
+}
+
+func (a *trayApp) showStats(w stats.Window, records []stats.Record) {
+	now := time.Now()
+	buckets := stats.Aggregate(records, w, now)
+	total := stats.Summarise(records, w, now)
+	systray.Show("myst-relay stats - "+w.Label, renderStats(w, buckets, total))
+}
+
+// maxBarChars bounds how wide the longest bar is drawn - the rest scale
+// against it - so one outsized bucket does not run the chart off the edge of
+// the dialog.
+const maxBarChars = 40
+
+// renderStats draws three charts - bytes, cost, connections - independently
+// of one another: each has its own scale, because a week with one enormous
+// session and a week with a thousand small ones would otherwise both flatten
+// two of the three charts to nothing next to the third. The window's headline
+// figures - sessions, their average length, totals - follow, computed
+// straight from the records rather than by re-adding what the charts show, so
+// a session spanning several bars is still counted once.
+func renderStats(w stats.Window, buckets []stats.Bucket, total stats.Totals) string {
+	var b strings.Builder
+
+	renderChart(&b, w, buckets, "Data carried",
+		func(bk stats.Bucket) float64 { return float64(bk.Carried()) },
+		func(bk stats.Bucket) string { return humanBytes(bk.Carried()) })
+	b.WriteString("\n")
+	renderChart(&b, w, buckets, "Cost (MYST)",
+		func(bk stats.Bucket) float64 { return weiFloat(bk.Wei) },
+		func(bk stats.Bucket) string { return tunnel.FormatMYST(bk.Wei) })
+	b.WriteString("\n")
+	renderChart(&b, w, buckets, "Connections",
+		func(bk stats.Bucket) float64 { return float64(bk.Admitted) },
+		func(bk stats.Bucket) string { return strconv.FormatUint(bk.Admitted, 10) })
+
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Sessions: %d", total.Sessions)
+	if total.Sessions > 0 {
+		fmt.Fprintf(&b, "   Avg duration: %s", humanDuration(total.AvgDuration()))
+	}
+	if total.Refused > 0 {
+		fmt.Fprintf(&b, "   Connections: %d admitted, %d refused", total.Admitted, total.Refused)
+	} else {
+		fmt.Fprintf(&b, "   Connections: %d", total.Admitted)
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Carried: %s   Cost: %s MYST\n", humanBytes(total.Carried()), tunnel.FormatMYST(total.Wei))
+	return b.String()
+}
+
+// renderChart writes one bar per bucket, scaled against that chart's own
+// tallest bucket - not shared with the other two charts, which is the whole
+// point of drawing them separately.
+func renderChart(b *strings.Builder, w stats.Window, buckets []stats.Bucket, title string,
+	value func(stats.Bucket) float64, display func(stats.Bucket) string) {
+	var max float64
+	for _, bk := range buckets {
+		if v := value(bk); v > max {
+			max = v
+		}
+	}
+	fmt.Fprintf(b, "%s\n", title)
+	if max == 0 {
+		b.WriteString("  nothing yet\n")
+		return
+	}
+	for _, bk := range buckets {
+		n := int(value(bk) / max * maxBarChars)
+		fmt.Fprintf(b, "%-8s %9s  %s\n", bucketLabel(bk.Start, w.Bucket, len(buckets)), display(bk), strings.Repeat("█", n))
+	}
+}
+
+// weiFloat is only ever used to size a bar against other bars, so the
+// precision float64 loses against a *big.Int does not matter here the way it
+// would anywhere this codebase actually reports an amount of MYST.
+func weiFloat(w *big.Int) float64 {
+	if w == nil {
+		return 0
+	}
+	f, _ := new(big.Float).SetInt(w).Float64()
+	return f
+}
+
+// humanDuration keeps the existing "38m0s" shape for anything under a day -
+// consistent with every other duration this codebase prints - and switches to
+// days and hours beyond that: a session can run for days, and "96h0m0s" is a
+// worse answer than "4d" to "how long was that".
+func humanDuration(d time.Duration) string {
+	if d < 24*time.Hour {
+		return d.Truncate(time.Minute).String()
+	}
+	days := d / (24 * time.Hour)
+	hours := (d % (24 * time.Hour)) / time.Hour
+	if hours == 0 {
+		return fmt.Sprintf("%dd", days)
+	}
+	return fmt.Sprintf("%dd%dh", days, hours)
+}
+
+// bucketLabel names a bar by its start, in whatever unit the bucket size
+// itself makes readable: a clock time for anything an hour or shorter, a
+// weekday for a handful of daily buckets, a date once there are enough of
+// those that weekdays would repeat, and a bare month for anything coarser.
+func bucketLabel(t time.Time, bucket time.Duration, n int) string {
+	switch {
+	case bucket < time.Hour, bucket == time.Hour:
+		return t.Format("15:04")
+	case bucket == 24*time.Hour:
+		if n <= 7 {
+			return t.Format("Mon")
+		}
+		return t.Format("Jan 2")
+	case bucket == 7*24*time.Hour:
+		return t.Format("Jan 2")
+	default:
+		return t.Format("Jan 2006")
+	}
+}
+
 func (a *trayApp) doChangeExit() {
 	// Traffic stopping is what an exit change is; being warned about it is not
 	// news to whoever just asked for it.
@@ -636,6 +825,17 @@ func (a *trayApp) spawn() error {
 	}
 	cmd := exec.Command(exe, "run", "-config", a.cfgPath)
 	detachChild(cmd)
+	// A detached child with nothing set here has its stdout and stderr go to
+	// nothing: not a hidden console, not lost in a window nobody is watching -
+	// discarded outright. A panic that would otherwise have printed a stack
+	// trace to a console leaves none at all. This is the one place that can
+	// still catch it: crashLog is set before Start, and a Go program's own
+	// panic output goes to the process's real stderr regardless of what it
+	// later opens for its own structured log.
+	if f, err := openCrashLog(a.cfgPath); err == nil {
+		defer f.Close()
+		cmd.Stdout, cmd.Stderr = f, f
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -650,6 +850,25 @@ func (a *trayApp) spawn() error {
 			a.cfg.HealthListen, a.cfg.LogFile)
 	}
 	return nil
+}
+
+// openCrashLog opens the file a spawned relay's stdout and stderr are
+// connected to. Nothing this codebase writes there on purpose - slog writes to
+// its own file - so it should normally stay empty; it only fills when the
+// relay panics or the Go runtime itself dies (stack overflow, out of memory),
+// output that a hidden or detached child would otherwise lose entirely. It is
+// truncated once it grows past a couple of megabytes, which a file that is
+// meant to stay empty should never approach outside of a crash loop.
+func openCrashLog(cfgPath string) (*os.File, error) {
+	dir := filepath.Join(filepath.Dir(cfgPath), "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "crash.log")
+	if st, err := os.Stat(path); err == nil && st.Size() > 2<<20 {
+		_ = os.Remove(path)
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
 
 // supervise waits for a relay this tray started and puts it back when it dies

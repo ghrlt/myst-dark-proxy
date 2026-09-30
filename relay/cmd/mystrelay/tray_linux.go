@@ -41,3 +41,10 @@ func supervisorStop() error { return systemctl("stop") }
 func systemctl(args ...string) error {
 	return exec.Command("systemctl", append(append([]string{"--user"}, args...), unitName)...).Run()
 }
+
+// openPath opens a file or folder in whatever the desktop associates with it.
+// Start rather than Run: xdg-open hands the request off and returns, but the
+// thing it hands off to can stay running for as long as the file viewer does.
+func openPath(path string) error {
+	return exec.Command("xdg-open", path).Start()
+}

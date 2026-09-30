@@ -93,7 +93,7 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	}
 
 	log.Debug("stream open", "target", target.String())
-	frontend.Splice(sess.Context, client, upstream, s.IdleTimeout)
+	frontend.Splice(s.Log, sess.Context, client, upstream, s.IdleTimeout)
 }
 
 func (s *Server) negotiate(client net.Conn) error {

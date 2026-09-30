@@ -47,6 +47,14 @@ const (
 // no three-day execution limit, and no refusing to start because a laptop
 // happens to be on battery.
 func installAutostart(o autostartOptions) error {
+	// Both launch paths below redirect the process they start into this file,
+	// so a panic that would otherwise vanish into a hidden or session-0 process
+	// with no console at all lands somewhere. The redirect target has to exist
+	// before Start-Process does, or it fails to create the process at all.
+	if err := os.MkdirAll(filepath.Join(o.AppDir, "logs"), 0o755); err != nil {
+		return fmt.Errorf("create logs directory: %w", err)
+	}
+
 	var trigger, principal, restart, action, description string
 
 	switch o.Scope {
@@ -166,19 +174,39 @@ func hiddenLaunch(o autostartOptions) string {
 	if o.Tray {
 		verb = "tray"
 	}
-	ps := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	// Only stderr is redirected: that is where a Go panic's stack trace is
+	// written, and Start-Process refuses to redirect stdout and stderr to the
+	// same file.
 	command := fmt.Sprintf(
-		`Start-Process -FilePath %s -ArgumentList ('%s -config ' + [char]34 + %s + [char]34) -WindowStyle Hidden`,
-		ps(o.Executable), verb, ps(o.ConfigPath))
+		`Start-Process -FilePath %s -ArgumentList ('%s -config ' + [char]34 + %s + [char]34) -WindowStyle Hidden -RedirectStandardError %s`,
+		ps(o.Executable), verb, ps(o.ConfigPath), ps(crashLogPath(o.AppDir)))
 	return execAction(powershellPath(),
 		fmt.Sprintf(`-NoProfile -NonInteractive -WindowStyle Hidden -Command "%s"`, command))
 }
 
 // directLaunch is the boot action: SYSTEM runs in session 0, where there is no
-// window to hide, so the task runs the relay itself and owns it.
+// window to hide and, since Task Scheduler gives a launched process no console
+// of its own either, nowhere a panic's stack trace would land. Going through
+// Start-Process here too, rather than the plain <Exec> a foreground process
+// would use, is what lets that output be redirected; -Wait and propagating its
+// exit code keep the task's own RestartOnFailure watching the relay's actual
+// exit rather than the wrapper's.
 func directLaunch(o autostartOptions) string {
-	return execAction(o.Executable, `run -config "`+o.ConfigPath+`"`)
+	command := fmt.Sprintf(
+		`$p = Start-Process -FilePath %s -ArgumentList ('run -config ' + [char]34 + %s + [char]34) -RedirectStandardError %s -NoNewWindow -PassThru -Wait; exit $p.ExitCode`,
+		ps(o.Executable), ps(o.ConfigPath), ps(crashLogPath(o.AppDir)))
+	return execAction(powershellPath(),
+		fmt.Sprintf(`-NoProfile -NonInteractive -WindowStyle Hidden -Command "%s"`, command))
 }
+
+// ps quotes a string as a single-quoted PowerShell literal.
+func ps(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// crashLogPath is where a launch redirects the relay's own stderr. Nothing
+// writes there on purpose - slog has its own file - so it should stay empty;
+// it only fills when the relay panics or the Go runtime itself dies, output a
+// hidden or session-0 process would otherwise lose outright.
+func crashLogPath(appDir string) string { return filepath.Join(appDir, "logs", "crash.log") }
 
 func execAction(command, args string) string {
 	return fmt.Sprintf(`    <Exec>

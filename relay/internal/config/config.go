@@ -179,6 +179,15 @@ type Config struct {
 	ExitCheckURL     string        // fetched through the tunnel to learn the exit address; "" disables
 	LogLevel         string
 	LogFile          string // empty logs to stdout
+	// MaxConnections bounds how many clients each frontend serves at once. A
+	// connection beyond the limit waits in the kernel's own accept backlog
+	// instead of this process growing goroutines and sockets without bound
+	// under heavy load. 0 disables the limit.
+	MaxConnections int
+	// StatsFile is where a history of what the relay has carried is kept -
+	// one line per session, plus periodic connection-count ticks - so the
+	// tray's "View stats" survives a restart. Empty disables it.
+	StatsFile string
 }
 
 // Load reads the environment and returns a validated configuration.
@@ -218,6 +227,8 @@ func Load() (*Config, error) {
 		ExitCheckURL:     env("RELAY_EXIT_CHECK_URL", "https://api.ipify.org"),
 		LogLevel:         env("RELAY_LOG_LEVEL", "info"),
 		LogFile:          env("RELAY_LOG_FILE", ""),
+		StatsFile:        env("RELAY_STATS_FILE", filepath.Join(AppDir(), "logs", "sessions.jsonl")),
+		MaxConnections:   envInt("RELAY_MAX_CONNECTIONS", 1000),
 
 		Auth: Auth{
 			Username: env("RELAY_PROXY_USER", ""),
@@ -347,6 +358,9 @@ func (c *Config) validate() error {
 	// one client guaranteed to be refused.
 	if (c.OnDemand || c.SessionIdle > 0) && c.ReadyTimeout <= 0 {
 		return fmt.Errorf("RELAY_ACTIVATION_TIMEOUT must be positive while sessions are opened on demand")
+	}
+	if c.MaxConnections < 0 {
+		return fmt.Errorf("RELAY_MAX_CONNECTIONS=%d must not be negative; 0 disables the limit", c.MaxConnections)
 	}
 	return nil
 }

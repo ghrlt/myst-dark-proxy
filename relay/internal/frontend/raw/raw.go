@@ -60,5 +60,5 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	defer upstream.Close()
 
 	log.Debug("stream open")
-	frontend.Splice(sess.Context, client, upstream, s.IdleTimeout)
+	frontend.Splice(s.Log, sess.Context, client, upstream, s.IdleTimeout)
 }

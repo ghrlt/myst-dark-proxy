@@ -156,6 +156,7 @@ func cmdSetup(args []string) error {
 	// ---- write the config ----------------------------------------------
 	cfgPath := filepath.Join(appDir, "config.env")
 	logFile := filepath.Join(appDir, "logs", "relay.log")
+	statsFile := filepath.Join(appDir, "logs", "sessions.jsonl")
 	settings := configFile(configValues{
 		AppDir:     appDir,
 		Identity:   installedID,
@@ -167,6 +168,7 @@ func cmdSetup(args []string) error {
 		HealthPort: *healthPort,
 		Countries:  *country,
 		LogFile:    logFile,
+		StatsFile:  statsFile,
 	})
 	if err := os.WriteFile(cfgPath, []byte(settings), 0o600); err != nil {
 		return err
@@ -244,6 +246,7 @@ type configValues struct {
 	HealthPort int
 	Countries  string
 	LogFile    string
+	StatsFile  string
 }
 
 func configFile(v configValues) string {
@@ -301,6 +304,11 @@ func configFile(v configValues) string {
 	w("")
 	w("RELAY_LOG_FILE=%s", v.LogFile)
 	w("RELAY_LOG_LEVEL=info")
+	w("")
+	w("# A line is kept here each time a session ends - bytes carried, duration,")
+	w("# cost, which exit - so the tray's \"View stats\" survives a restart.")
+	w("# Blank turns it off.")
+	w("RELAY_STATS_FILE=%s", v.StatsFile)
 	return b.String()
 }
 
