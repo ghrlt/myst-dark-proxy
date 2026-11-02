@@ -85,6 +85,7 @@ mystrelay.exe balance   # what the identity paying for the exits has left
 mystrelay.exe rotate    # leave this exit node and pick another one
 mystrelay.exe exit-type residential   # only use exits of that kind, from now on
 mystrelay.exe exit-type              # show which kind is in force, and the rest
+mystrelay.exe exit-country NL        # only exit from that country (or "any")
 mystrelay.exe stop      # stop the running relay
 mystrelay.exe verify    # prove traffic leaves through the exit, not through you
 mystrelay.exe update    # check for a newer release and install it over itself
@@ -195,11 +196,11 @@ are kept by the relay.
 
 ### Controls
 
-Four endpoints take instructions rather than answering questions:
-`/control/rotate` moves to a different exit, `/control/exit-type?type=` narrows
+Five endpoints take instructions rather than answering questions:
+`/control/rotate` moves to a different exit, `/control/exit-country?country=` and `/control/exit-type?type=` narrow
 which kinds of exit are acceptable, `/control/balance` reads what the identity
 has left, and `/control/stop` shuts the relay down. They are what the tray icon
-and the `rotate`, `exit-type`, `balance` and `stop` commands use.
+and the `rotate`, `exit-type`, `exit-country`, `balance` and `stop` commands use.
 
 They are held to a tighter rule than the read-only endpoints: a caller must
 come from this machine and present the secret from `control.token`, written
@@ -224,7 +225,8 @@ wins). Full annotated list in [`.env.example`](.env.example).
 | `RELAY_ON_DEMAND` | open the session at the first client, not at startup |
 | `RELAY_SESSION_IDLE_TIMEOUT` | close a session that has carried nothing this long (`0` keeps it) |
 | `RELAY_ACTIVATION_TIMEOUT` | how long a client waits while its session is built |
-| `EXIT_COUNTRY`, `EXIT_MIN_QUALITY`, `EXIT_MAX_LATENCY` | exit policy allow-lists |
+| `EXIT_COUNTRY` | countries an exit may be in, ISO codes (`NL,DE`). The default the tray's "Country of exit" and `exit-country` move from |
+| `EXIT_MIN_QUALITY`, `EXIT_MAX_LATENCY` | exit policy allow-lists |
 | `EXIT_IP_TYPE` | what the exit address looks like: `residential`, `cellular`, `business`, `hosting`, `content_delivery_network` (`cdn`), `education`, `government`. The default the tray and `exit-type` move from |
 | `EXIT_PROVIDER_ID` | pin one provider, ignoring the filters |
 | `RELAY_ROTATE_EVERY` | change exit on a timer |
@@ -275,7 +277,7 @@ The node image comes from upstream, and `MYST_IMAGE_TAG` is the whole policy:
 | | |
 |---|---|
 | unset, or `latest` | follows upstream; `make update` pulls whatever is newest |
-| `1.39.5-alpine` | pinned; nothing moves until you edit `.env` |
+| `1.39.9-alpine` | pinned; nothing moves until you edit `.env` |
 
 ```bash
 make update-check   # what has moved: the node image, this checkout vs releases
@@ -283,7 +285,7 @@ make update         # pull, rebuild, recreate what changed
 ```
 
 Upstream tags releases with an `-alpine` suffix and publishes no bare number, so
-`1.39.5-alpine` is a tag and `1.39.5` is not. Pinning is the safer setting for a
+`1.39.9-alpine` is a tag and `1.39.9` is not. Pinning is the safer setting for a
 relay whose behaviour you have verified: proxy mode is undocumented, and an
 upstream release can change it without saying so. Run `make verify` after an
 update - that is the check that it did not.

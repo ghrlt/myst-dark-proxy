@@ -161,6 +161,21 @@ func (c *relayClient) exitType(ctx context.Context, types []string) (applied []s
 	return out.IPTypes, out.Providers, out.Changing, nil
 }
 
+// exitCountry narrows the relay's choice of exit to certain countries, and
+// returns how many providers are left and whether the current exit was left.
+func (c *relayClient) exitCountry(ctx context.Context, countries []string) (applied []string, providers int, changed bool, err error) {
+	var out struct {
+		Countries []string `json:"countries"`
+		Providers int      `json:"providers"`
+		Changing  bool     `json:"changing"`
+	}
+	path := "/control/exit-country?country=" + urlValue(strings.Join(countries, ","))
+	if err := c.call(ctx, http.MethodPost, path, true, &out); err != nil {
+		return nil, 0, false, err
+	}
+	return out.Countries, out.Providers, out.Changing, nil
+}
+
 func (c *relayClient) stop(ctx context.Context) error {
 	return c.call(ctx, http.MethodPost, "/control/stop", true, nil)
 }
@@ -331,6 +346,69 @@ func cmdExitType(args []string) error {
 			orDash(rep.Tunnel.ExitIP), orDash(rep.Tunnel.Country), orDash(rep.Tunnel.IPType), short(rep.Tunnel.ProviderID))
 	}
 	return nil
+}
+
+// cmdExitCountry is the command line's half of the tray's country submenu.
+func cmdExitCountry(args []string) error {
+	fs := newFlagSet("exit-country")
+	cfgPath := fs.String("config", "", "path to config.env")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	client := newRelayClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	if fs.NArg() == 0 {
+		rep, err := client.status(ctx)
+		if err != nil {
+			return notRunning(err)
+		}
+		current := "any (this relay cannot narrow it)"
+		if rep.Exit != nil && rep.Exit.Countries != nil {
+			current = exitCountryNames(*rep.Exit.Countries)
+		}
+		fmt.Printf("\n  exit country %s\n", current)
+		if rep.Tunnel.Country != "" {
+			fmt.Printf("  on now       %s\n", config.CountryLabel(rep.Tunnel.Country))
+		}
+		fmt.Printf("\n  set one with: %s exit-country <code>[,<code>...]   (or \"any\")\n\n", exeName())
+		return nil
+	}
+
+	countries := strings.Split(strings.Join(fs.Args(), ","), ",")
+	if len(countries) == 1 && strings.EqualFold(strings.TrimSpace(countries[0]), "any") {
+		countries = nil
+	}
+	applied, providers, changed, err := client.exitCountry(ctx, countries)
+	if err != nil {
+		return notRunning(err)
+	}
+	fmt.Printf("exit country: %s (%d providers)\n", exitCountryNames(applied), providers)
+	if !changed {
+		return nil
+	}
+	fmt.Println("leaving the current exit; it is not in one of those")
+	if rep := awaitExit(ctx, client); rep != nil {
+		fmt.Printf("  exit %s  %s %s  via %s\n",
+			orDash(rep.Tunnel.ExitIP), orDash(rep.Tunnel.Country), orDash(rep.Tunnel.IPType), short(rep.Tunnel.ProviderID))
+	}
+	return nil
+}
+
+func exitCountryNames(countries []string) string {
+	if len(countries) == 0 {
+		return "any"
+	}
+	out := make([]string, 0, len(countries))
+	for _, c := range countries {
+		out = append(out, config.CountryLabel(c))
+	}
+	return strings.Join(out, ", ")
 }
 
 // exitTypeLine renders the policy in force for a person reading it.

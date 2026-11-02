@@ -181,7 +181,8 @@ type statusReport struct {
 		Sessions uint64      `json:"sessions_total"`
 	} `json:"usage"`
 	Exit *struct {
-		IPTypes []string `json:"ip_types"`
+		IPTypes   []string  `json:"ip_types"`
+		Countries *[]string `json:"countries"`
 	} `json:"exit"`
 	Endpoints []struct {
 		Name string `json:"name"`

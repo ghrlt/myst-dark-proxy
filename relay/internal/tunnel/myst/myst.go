@@ -137,6 +137,8 @@ type Tunnel struct {
 	// tray or the CLI asks for a different kind of exit, so the setting can be
 	// moved without restarting the relay and losing the session with it.
 	ipTypes []string
+	// countries is the other live half: which countries an exit may be in.
+	countries []string
 }
 
 // New builds a tunnel. It does not contact the node; call Run for that.
@@ -159,6 +161,7 @@ func New(opt Options) *Tunnel {
 		upstreamPort: opt.ProxyPort,
 		cooldown:     map[string]time.Time{},
 		ipTypes:      append([]string(nil), opt.Exit.IPTypes...),
+		countries:    config.NormaliseCountries(opt.Exit.Countries),
 	}
 }
 

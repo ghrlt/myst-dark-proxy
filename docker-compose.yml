@@ -38,7 +38,7 @@ services:
   #
   # The tag is where this deployment's update policy lives. "latest" (the
   # default) follows upstream and moves whenever "make update" pulls; a version
-  # tag - 1.39.5-alpine, the form upstream publishes, there is no bare 1.39.5 -
+  # tag - 1.39.9-alpine, the form upstream publishes, there is no bare 1.39.9 -
   # never moves until MYST_IMAGE_TAG is edited. Pinning is worth it for a relay
   # that must keep behaving exactly as it was verified to: the node's proxy mode
   # is undocumented, so an upstream change can alter it without notice.

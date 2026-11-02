@@ -84,6 +84,13 @@ type exitTyper interface {
 	SetExitTypes(ctx context.Context, types []string) ([]string, int, error)
 }
 
+// countrier is implemented by tunnels whose choice of exit can be narrowed to
+// certain countries while they run.
+type countrier interface {
+	ExitCountries() []string
+	SetExitCountries(ctx context.Context, countries []string) ([]string, int, error)
+}
+
 // balancer is implemented by tunnels that can say what the identity paying for
 // them has left.
 type balancer interface {
@@ -157,6 +164,9 @@ func (s *Server) report() Report {
 // can be changed from here is what Control says.
 type ExitPolicy struct {
 	IPTypes []string `json:"ip_types"`
+	// Countries is empty for every country, and is present only when the
+	// tunnel can be narrowed by country.
+	Countries *[]string `json:"countries,omitempty"`
 }
 
 // exit is the exit policy in force, when the tunnel has one that can be moved.
@@ -169,7 +179,15 @@ func (s *Server) exit() *ExitPolicy {
 	if types == nil {
 		types = []string{}
 	}
-	return &ExitPolicy{IPTypes: types}
+	p := &ExitPolicy{IPTypes: types}
+	if c, ok := s.Tunnel.(countrier); ok {
+		countries := c.ExitCountries()
+		if countries == nil {
+			countries = []string{}
+		}
+		p.Countries = &countries
+	}
+	return p
 }
 
 // usage is what the tunnel has carried and spent, when it keeps count.
@@ -282,6 +300,7 @@ func (s *Server) handler() http.Handler {
 	// identity to price - says so with 501 rather than failing vaguely.
 	mux.HandleFunc("/control/rotate", s.guard(http.MethodPost, s.rotate))
 	mux.HandleFunc("/control/exit-type", s.guard(http.MethodPost, s.exitType))
+	mux.HandleFunc("/control/exit-country", s.guard(http.MethodPost, s.exitCountry))
 	mux.HandleFunc("/control/balance", s.guard(http.MethodGet, s.balance))
 	mux.HandleFunc("/control/stop", s.guard(http.MethodPost, s.stop))
 
@@ -391,6 +410,61 @@ func (s *Server) exitType(w http.ResponseWriter, r *http.Request) {
 		"providers": matches,
 		"changing":  moved,
 	})
+}
+
+// exitCountry narrows the exit policy to certain countries, and moves off the
+// current exit when it is in none of them. It is exitType for the other half of
+// the policy, and held to the same rules.
+func (s *Server) exitCountry(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.Tunnel.(countrier)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this tunnel has no choice of exit to narrow")
+		return
+	}
+	var countries []string
+	if raw := r.URL.Query().Get("country"); raw != "" {
+		countries = strings.Split(raw, ",")
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	applied, matches, err := t.SetExitCountries(ctx, countries)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if applied == nil {
+		applied = []string{}
+	}
+
+	moved := false
+	if r0, ok := s.Tunnel.(rotator); ok && !s.exitInCountry(applied) {
+		moved = r0.Rotate("exit country changed")
+	}
+	s.Log.Info("exit country changed", "countries", applied, "providers", matches, "left_exit", moved)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"countries": applied,
+		"providers": matches,
+		"changing":  moved,
+	})
+}
+
+// exitInCountry reports whether the exit in use is already in one of these
+// countries. A relay with no session has nothing to move, so it fits.
+func (s *Server) exitInCountry(countries []string) bool {
+	if len(countries) == 0 {
+		return true
+	}
+	st := s.Tunnel.Status()
+	if !st.State.Usable() {
+		return true
+	}
+	for _, c := range countries {
+		if strings.EqualFold(c, st.Country) {
+			return true
+		}
+	}
+	return false
 }
 
 // exitFits reports whether the exit in use already satisfies the policy. A

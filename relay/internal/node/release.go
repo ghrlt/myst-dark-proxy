@@ -25,7 +25,7 @@ import (
 )
 
 // DefaultVersion is the node release this relay is built and tested against.
-const DefaultVersion = "1.39.5"
+const DefaultVersion = "1.39.9"
 
 // Archive describes one downloadable node build.
 type Archive struct {
@@ -47,6 +47,20 @@ func (a Archive) BinaryName() string {
 // release is caught at install time instead of trusted blindly. They were
 // computed from the published archives.
 var releases = map[string]map[string]Archive{
+	"1.39.9": {
+		"windows/amd64": {
+			URL:    "https://github.com/mysteriumnetwork/node/releases/download/1.39.9/myst_windows_amd64.zip",
+			SHA256: "00e82637f77b028ed5a1fadc7bdb5da5380fbf61a0018fd47eb669e883a37b61",
+			Member: "myst.exe",
+			Kind:   "zip",
+		},
+		"linux/amd64": {
+			URL:    "https://github.com/mysteriumnetwork/node/releases/download/1.39.9/myst_linux_amd64.tar.gz",
+			SHA256: "a6aadca289c4b3c3f3b66f2e24c101e4bd60b9c4ea8f7b5ee550810b99d4008a",
+			Member: "./myst",
+			Kind:   "targz",
+		},
+	},
 	"1.39.5": {
 		"windows/amd64": {
 			URL:    "https://github.com/mysteriumnetwork/node/releases/download/1.39.5/myst_windows_amd64.zip",

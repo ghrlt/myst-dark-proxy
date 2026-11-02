@@ -9,7 +9,7 @@
 #
 #   the node    mysteriumnetwork/myst:$MYST_IMAGE_TAG. The default, "latest",
 #               follows upstream and moves whenever this pulls. A version tag -
-#               1.39.5-alpine - never moves until you edit .env, which is the
+#               1.39.9-alpine - never moves until you edit .env, which is the
 #               point of pinning: an update happens when you say so.
 #   the relay   built from this checkout, so it moves with git, not with this
 #               script. The native binary updates itself instead:

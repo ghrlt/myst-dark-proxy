@@ -316,6 +316,42 @@ func (a *trayApp) exitMenu(rep *statusReport) []systray.Item {
 			Do:      a.chooseExitType([]string{t}),
 		})
 	}
+	if rep.Exit.Countries != nil {
+		items = append(items, systray.Separator(), systray.Item{
+			Label:    "Country of exit",
+			Children: a.countryMenu(*rep.Exit.Countries),
+		})
+	}
+	return items
+}
+
+// countryMenu lists the countries to choose from, with the one in force marked.
+// The list is this build's short list plus anything the policy already names -
+// an EXIT_COUNTRY outside it must show as the one in force rather than leaving
+// the menu claiming "Any".
+func (a *trayApp) countryMenu(current []string) []systray.Item {
+	items := []systray.Item{{
+		Label:   "Any",
+		Checked: len(current) == 0,
+		Do:      a.chooseExitCountry(nil),
+	}}
+	listed := map[string]bool{}
+	add := func(code string) {
+		listed[strings.ToUpper(code)] = true
+		items = append(items, systray.Item{
+			Label:   config.CountryLabel(code),
+			Checked: containsFold(current, code),
+			Do:      a.chooseExitCountry([]string{code}),
+		})
+	}
+	for _, c := range current {
+		add(c)
+	}
+	for _, c := range config.Countries {
+		if !listed[c.Code] {
+			add(c.Code)
+		}
+	}
 	return items
 }
 
@@ -721,6 +757,39 @@ func (a *trayApp) chooseExitType(types []string) func() {
 			return
 		}
 		icon.Notify("Kind of exit address", summary+"\nLeaving the current exit; another is being picked.", false)
+		if rep := awaitExit(ctx, a.client); rep != nil {
+			icon.Notify("New exit node", exitLine(rep), false)
+		}
+	}
+}
+
+// chooseExitCountry narrows the relay to a country, or to any when countries is
+// empty.
+func (a *trayApp) chooseExitCountry(countries []string) func() {
+	return func() {
+		defer a.deliberately()()
+
+		icon := a.tray()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+
+		applied, providers, changed, err := a.client.exitCountry(ctx, countries)
+		if err != nil {
+			systray.Warn("Country of exit",
+				"The relay would not change to "+exitCountryNames(countries)+".\n\n"+err.Error()+
+					"\n\nNothing was changed; the relay is still using what it was.")
+			return
+		}
+		a.poll()
+		if icon == nil {
+			return
+		}
+		summary := fmt.Sprintf("%s - %d providers to choose from.", exitCountryNames(applied), providers)
+		if !changed {
+			icon.Notify("Country of exit", summary+"\nThe exit in use already qualifies.", false)
+			return
+		}
+		icon.Notify("Country of exit", summary+"\nLeaving the current exit; another is being picked.", false)
 		if rep := awaitExit(ctx, a.client); rep != nil {
 			icon.Notify("New exit node", exitLine(rep), false)
 		}
