@@ -509,6 +509,10 @@ func (t *Tunnel) Rotate(reason string) bool {
 	return true
 }
 
+// droppedCooldown is how long an exit that dropped a live session is kept out
+// of the running.
+const droppedCooldown = 10 * time.Minute
+
 // monitor watches the live session and returns when it is no longer usable.
 func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 	ticker := time.NewTicker(t.opt.HealthInterval)
@@ -584,6 +588,7 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 		// Cheapest and most decisive check first: the listener is local, so a
 		// closed port is immediate and unambiguous evidence.
 		if !t.upstreamAlive(ctx) {
+			t.penalise(provider, droppedCooldown)
 			t.setState(tunnel.StateFailed, "proxy listener gone")
 			return errors.New("node proxy listener disappeared")
 		}
@@ -598,6 +603,11 @@ func (t *Tunnel) monitor(ctx context.Context, provider string) error {
 			continue
 		}
 		if !cs.Connected() {
+			// The provider dropped a session it should have kept - node 1.39.9
+			// answers keepalives for closed sessions with "not active", so the
+			// node ends them within seconds. Reconnecting straight into the
+			// same pool would find the same exit again, so it sits out first.
+			t.penalise(provider, droppedCooldown)
 			t.setState(tunnel.StateFailed, "session status "+cs.Status)
 			return fmt.Errorf("session left Connected state: %s", cs.Status)
 		}

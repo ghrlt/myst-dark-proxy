@@ -35,19 +35,43 @@ type Client struct {
 
 	mu    sync.Mutex
 	token string
+
+	// lifecycle serialises Connect and Disconnect. The node runs one session
+	// lifecycle at a time, and a Disconnect landing while a Connect is in
+	// flight cancels it - the node reports that as err_connection_cancelled -
+	// so the two must never overlap. A channel rather than a mutex, so that
+	// waiting for a turn can be abandoned with the caller's context.
+	lifecycle chan struct{}
+}
+
+// requestTimeout bounds an ordinary API call. Connect is exempt: building a
+// session means the node negotiating with a provider, which can legitimately
+// take longer, and abandoning the request does not stop the node - it leaves
+// the half-built session behind. The caller's context is the bound there.
+const requestTimeout = 60 * time.Second
+
+// turn waits for the session lifecycle to be free, and returns what releases it.
+func (c *Client) turn(ctx context.Context) (func(), error) {
+	select {
+	case c.lifecycle <- struct{}{}:
+		return func() { <-c.lifecycle }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // New returns a client for baseURL. Node 1.39 serves the API at the root
 // (http://myst:4050), not under a /tequilapi prefix.
 func New(baseURL, user, pass string, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
+		hc = &http.Client{}
 	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		user:    user,
-		pass:    pass,
-		http:    hc,
+		lifecycle: make(chan struct{}, 1),
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		user:      user,
+		pass:      pass,
+		http:      hc,
 	}
 }
 
@@ -270,14 +294,24 @@ func (c *Client) Connection(ctx context.Context, id int) (*ConnectionStatus, err
 
 // Connect opens a session.
 func (c *Client) Connect(ctx context.Context, req ConnectRequest) (*ConnectionStatus, error) {
+	release, err := c.turn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	var out ConnectionStatus
-	err := c.do(ctx, http.MethodPut, "/connection", req, &out, true)
+	err = c.do(ctx, http.MethodPut, "/connection", req, &out, true)
 	return &out, err
 }
 
 // Disconnect tears down the session with the given connection id.
 func (c *Client) Disconnect(ctx context.Context, id int) error {
-	err := c.do(ctx, http.MethodDelete, connPath("/connection", id), nil, nil, true)
+	release, err := c.turn(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	err = c.do(ctx, http.MethodDelete, connPath("/connection", id), nil, nil, true)
 	var apiErr *APIError
 	if err != nil && errors.As(err, &apiErr) &&
 		(apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusUnprocessableEntity) {
@@ -399,6 +433,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, auth 
 }
 
 func (c *Client) attempt(ctx context.Context, method, path string, in, out any, auth bool) error {
+	if !(method == http.MethodPut && path == "/connection") {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
+		defer cancel()
+	}
 	var body io.Reader
 	if in != nil {
 		buf, err := json.Marshal(in)

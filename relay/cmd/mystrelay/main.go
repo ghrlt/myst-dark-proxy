@@ -261,7 +261,7 @@ func run(cfg *config.Config) error {
 		}()
 	}
 
-	api := tequilapi.New(cfg.TequilaBaseURL, cfg.TequilaUser, cfg.TequilaPass, &http.Client{Timeout: 60 * time.Second})
+	api := tequilapi.New(cfg.TequilaBaseURL, cfg.TequilaUser, cfg.TequilaPass, &http.Client{})
 
 	keystore, err := cfg.KeystoreJSON()
 	if err != nil {

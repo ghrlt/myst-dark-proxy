@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // The node keys /connection/statistics on the session's UUID while every other
@@ -86,5 +89,32 @@ func TestStatisticsOmitsAnUnknownSessionID(t *testing.T) {
 	}
 	if raw != "" {
 		t.Errorf("query: got %q, want no id at all", raw)
+	}
+}
+
+func TestConnectAndDisconnectDoNotOverlap(t *testing.T) {
+	var inFlight, overlapped atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/authenticate" || r.URL.Path == "/tequilapi/auth/authenticate" {
+			_, _ = w.Write([]byte(`{"token":"t"}`))
+			return
+		}
+		if inFlight.Add(1) > 1 {
+			overlapped.Add(1)
+		}
+		time.Sleep(50 * time.Millisecond)
+		inFlight.Add(-1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "u", "p", nil)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = c.Connect(context.Background(), ConnectRequest{}) }()
+	go func() { defer wg.Done(); _ = c.Disconnect(context.Background(), 4051) }()
+	wg.Wait()
+	if overlapped.Load() != 0 {
+		t.Fatal("a Disconnect ran while a Connect was in flight")
 	}
 }
