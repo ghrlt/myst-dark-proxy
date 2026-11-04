@@ -168,6 +168,25 @@ func (c *Client) Identity(ctx context.Context, id string) (*Identity, error) {
 	return &out, err
 }
 
+// BalanceTokens is a token amount as the node renders it.
+type BalanceTokens struct {
+	Wei   string `json:"wei"`
+	Ether string `json:"ether"`
+	Human string `json:"human"`
+}
+
+// RefreshBalance makes the node re-read the identity's balance and returns it.
+// The node caches the consumer balance and, since 1.39.9, leaves it at 0 until
+// something asks for a refresh, so GET /identities/{id} alone cannot be
+// trusted to say what is there.
+func (c *Client) RefreshBalance(ctx context.Context, id string) (BalanceTokens, error) {
+	var out struct {
+		Tokens BalanceTokens `json:"balance_tokens"`
+	}
+	err := c.do(ctx, http.MethodPut, "/identities/"+id+"/balance/refresh", nil, &out, true)
+	return out.Tokens, err
+}
+
 // ImportIdentity uploads a keystore document to the node. Nodes that predate
 // the endpoint return an APIError for which NotFound reports true; callers fall
 // back to a pre-seeded keystore directory in that case.

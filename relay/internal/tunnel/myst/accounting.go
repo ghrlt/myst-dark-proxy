@@ -179,6 +179,16 @@ func (t *Tunnel) Balance(ctx context.Context) (tunnel.Balance, error) {
 	if human == "" {
 		human = strings.TrimSpace(info.BalanceTokens.Ether)
 	}
+	// The identity document carries the node's cached balance, which can sit
+	// at 0 long after the money arrived. Ask for a fresh figure; if the node
+	// cannot give one, the cached one is still better than nothing.
+	if fresh, err := t.opt.Client.RefreshBalance(ctx, t.opt.Identity); err == nil && strings.TrimSpace(fresh.Wei) != "" {
+		wei = strings.TrimSpace(fresh.Wei)
+		human = strings.TrimSpace(fresh.Human)
+		if human == "" {
+			human = strings.TrimSpace(fresh.Ether)
+		}
+	}
 	if human == "" {
 		if n, ok := new(big.Int).SetString(wei, 10); ok {
 			human = tunnel.FormatMYST(n)

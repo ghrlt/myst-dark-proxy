@@ -118,3 +118,30 @@ func TestConnectAndDisconnectDoNotOverlap(t *testing.T) {
 		t.Fatal("a Disconnect ran while a Connect was in flight")
 	}
 }
+
+// The node leaves the identity's cached balance at 0 until asked to refresh
+// it, so the balance has to come from the refresh endpoint.
+func TestRefreshBalanceAsksTheNodeToReRead(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/authenticate" {
+			_, _ = w.Write([]byte(`{"token":"t"}`))
+			return
+		}
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_, _ = w.Write([]byte(`{"balance":290343585727157594933,"balance_tokens":` +
+			`{"wei":"290343585727157594933","ether":"290.343585727157594933","human":"290.343585"}}`))
+	}))
+	defer srv.Close()
+
+	b, err := New(srv.URL, "u", "p", nil).RefreshBalance(context.Background(), "0xabc")
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/identities/0xabc/balance/refresh" {
+		t.Errorf("asked %s %s, want PUT /identities/0xabc/balance/refresh", gotMethod, gotPath)
+	}
+	if b.Wei != "290343585727157594933" || b.Human != "290.343585" {
+		t.Errorf("got %+v", b)
+	}
+}
