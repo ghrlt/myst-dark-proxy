@@ -29,7 +29,7 @@ func cmdStatus(args []string) error {
 
 	rep, err := fetchStatus(cfg.HealthListen)
 	if err != nil {
-		return fmt.Errorf("%w\n\nThe relay does not appear to be running. Start it with \"%s run\"", err, exeName())
+		return fmt.Errorf("%w\n\nThe relay does not appear to be running. Start it with \"%s\"", err, startCommand())
 	}
 
 	t := rep.Tunnel

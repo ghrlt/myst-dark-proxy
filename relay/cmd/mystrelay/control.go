@@ -513,7 +513,7 @@ func humanBytes(n uint64) string {
 // notRunning turns a connection failure into the sentence that helps.
 func notRunning(err error) error {
 	if isRefused(err) {
-		return fmt.Errorf("the relay does not appear to be running. Start it with \"%s run\"", exeName())
+		return fmt.Errorf("the relay does not appear to be running. Start it with \"%s\"", startCommand())
 	}
 	return err
 }

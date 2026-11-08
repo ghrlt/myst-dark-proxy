@@ -68,9 +68,13 @@ mystrelay.exe autostart install -scope logon    at sign-in, as you, no admin
 mystrelay.exe autostart install -scope boot     before sign-in, as SYSTEM, needs admin
 mystrelay.exe autostart status
 mystrelay.exe autostart remove
+mystrelay.exe startservice                      start it now, as sign-in would
 ```
 
-Both register a Scheduled Task named `myst-relay`.
+Both register a Scheduled Task named `myst-relay`. `startservice` runs that
+task and waits until the relay answers; a boot task needs an Administrator
+prompt for it, as it did to register. On Linux the same command starts the
+systemd unit instead.
 
 The **logon** task is registered against your account alone: it triggers at your
 sign-in and runs as you, so an ordinary terminal is all it takes. What it

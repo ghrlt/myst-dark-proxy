@@ -458,3 +458,31 @@ func restartHint() string {
 	}
 	return "  " + exeName() + " stop\n  " + exeName() + " run"
 }
+
+// lookupService finds the scheduled task "autostart install" registered.
+// Running it does what signing in does: start the icon, which starts the
+// relay - or, for a boot task, the relay itself.
+func lookupService() serviceInfo {
+	if !taskExists() {
+		return serviceInfo{}
+	}
+	return serviceInfo{
+		Installed: true,
+		Via:       "scheduled task " + taskName,
+		// The task's own state is the launcher's, which exits once the relay
+		// is up; only the relay answering says anything.
+		KnowsActive: false,
+		Start: func() error {
+			out, err := exec.Command("schtasks", "/run", "/tn", taskName).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("schtasks: %w\n%s\nA task registered for boot belongs to the system account; starting it\nneeds an Administrator prompt.",
+					err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+	}
+}
+
+func logsHint(path string) string {
+	return "powershell -NoProfile -Command \"Get-Content -Tail 50 '" + path + "'\""
+}

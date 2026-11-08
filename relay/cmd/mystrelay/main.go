@@ -66,6 +66,8 @@ commands:
   exit-country Show or set the country to exit from (NL, DE, ...);
                "any" lifts the restriction
   stop         Stop the running relay
+  startservice Start the relay through its installed service (systemd unit
+               or scheduled task), and wait until it answers
   tray         Put a status icon in the notification area (Windows, Linux)
   verify       Prove traffic leaves through the exit node, and that it stops
                when the tunnel does
@@ -108,6 +110,8 @@ func main() {
 		err = cmdExitCountry(args)
 	case "stop":
 		err = cmdStop(args)
+	case "startservice", "start-service":
+		err = cmdStartService(args)
 	case "tray":
 		err = cmdTray(args)
 	case "verify":

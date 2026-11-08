@@ -235,3 +235,56 @@ func restartHint() string {
 	}
 	return "  stop it where it is running, then: " + exeName() + " run"
 }
+
+const systemUnitPath = "/etc/systemd/system/" + taskName + ".service"
+
+// lookupService finds the unit "autostart install" wrote: the user unit first,
+// which is what a desktop install has, then a system unit installed by hand.
+func lookupService() serviceInfo {
+	unit := taskName + ".service"
+	if _, err := os.Stat(userUnitPath()); err == nil {
+		return serviceInfo{
+			Installed:   true,
+			Via:         "systemd user unit " + unit,
+			Active:      unitActive("--user", unit),
+			KnowsActive: true,
+			Start:       func() error { return runSystemctl("--user", "start", unit) },
+			Logs:        "journalctl --user -u " + taskName + " -n 50",
+		}
+	}
+	if _, err := os.Stat(systemUnitPath); err == nil {
+		return serviceInfo{
+			Installed:   true,
+			Via:         "systemd unit " + unit,
+			Active:      unitActive("", unit),
+			KnowsActive: true,
+			Start: func() error {
+				// Said rather than asked for: a password prompt from a command
+				// that looks unprivileged is not something to spring on anyone.
+				if os.Geteuid() != 0 {
+					return fmt.Errorf("the service is a system unit, which needs root to start:\n  sudo systemctl start %s", taskName)
+				}
+				return runSystemctl("start", unit)
+			},
+			Logs: "sudo journalctl -u " + taskName + " -n 50",
+		}
+	}
+	return serviceInfo{}
+}
+
+func unitActive(scope, unit string) bool {
+	args := []string{"is-active", "--quiet", unit}
+	if scope != "" {
+		args = append([]string{scope}, args...)
+	}
+	return exec.Command("systemctl", args...).Run() == nil
+}
+
+func runSystemctl(args ...string) error {
+	if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func logsHint(path string) string { return "tail -n 50 " + path }

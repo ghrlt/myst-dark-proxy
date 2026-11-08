@@ -88,6 +88,7 @@ mystrelay.exe exit-type residential   # only use exits of that kind, from now on
 mystrelay.exe exit-type              # show which kind is in force, and the rest
 mystrelay.exe exit-country NL        # only exit from that country (or "any")
 mystrelay.exe stop      # stop the running relay
+mystrelay.exe startservice   # start it again through its autostart registration
 mystrelay.exe verify    # prove traffic leaves through the exit, not through you
 mystrelay.exe update    # check for a newer release and install it over itself
 
