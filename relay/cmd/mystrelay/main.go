@@ -235,7 +235,9 @@ func run(cfg *config.Config) error {
 	}
 
 	// A desktop install owns its node: fetch it, seed the identity into its
-	// keystore, and keep the process alive for as long as we run.
+	// keystore, and keep the process alive for as long as we run. Owning it is
+	// also what lets the tunnel restart it to clear a dead session's device.
+	var resetNode func(context.Context, string) error
 	if cfg.Managed {
 		binary, err := node.Ensure(runCtx, cfg.NodeDir, cfg.NodeVersion, log)
 		if err != nil {
@@ -254,6 +256,7 @@ func run(cfg *config.Config) error {
 			LogPath:     filepath.Join(cfg.NodeDataDir, "logs", "node.log"),
 			Log:         log,
 		}
+		resetNode = sup.Restart
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -295,6 +298,7 @@ func run(cfg *config.Config) error {
 		Demand:         wants,
 		OnDemand:       cfg.OnDemand,
 		SessionIdle:    cfg.SessionIdle,
+		ResetNode:      resetNode,
 		StatsFile:      cfg.StatsFile,
 		Logger:         log,
 	})

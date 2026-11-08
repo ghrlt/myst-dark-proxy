@@ -7,14 +7,17 @@
 // - egress is a dialer, not a system-wide route, so nothing on the host can
 // accidentally inherit it and nothing can silently bypass it.
 //
-// Two behaviours of the node in this mode are worth knowing, because both are
-// invisible in its documentation and both were verified against 1.39.5:
+// Three behaviours of the node in this mode are worth knowing, because all
+// are invisible in its documentation and all were verified against 1.39.5:
 //
 //   - Sessions are keyed by the proxy port. Every /connection endpoint takes it
 //     as ?id=; without it the node reports on connection 0 and always answers
 //     "NotConnected".
 //   - /connection/ip reports the node's own public address, not the session's,
 //     so the exit address is established by fetching through the tunnel.
+//   - Ending a session does not end its WireGuard device: the node keeps it,
+//     peer and all, for another two minutes (see deviceLinger), and a session
+//     opened in that window often never comes up.
 //
 // A session is also a running cost: the provider charges per hour as well as
 // per gibibyte, so one nobody is using is money spent carrying nothing. When a
@@ -50,6 +53,24 @@ import (
 // looking for the node's proxy listener. 1.39.5 honours proxy_port exactly;
 // the scan is cheap insurance against a release that treats it as a base.
 const upstreamScanRange = 8
+
+// deviceLinger is how long the node keeps a session's WireGuard device alive
+// after the session has ended. In proxy mode the node's Close stops the proxy
+// listener at once but defers closing the device itself by two minutes
+// (services/wireguard/endpoint/proxyclient, unchanged from 1.39.5 to 1.39.9
+// and on master), so for that long the old peer keeps sending keepalives and
+// handshake initiations to the provider that was left, from its own socket,
+// next to whatever device the next session builds.
+//
+// That is not just untidy. Across the node's logs, every session opened with
+// no such device left over came up; of those opened while one was still alive,
+// more than a third never did - the handshake never completed, or the provider
+// answered "session is not active" seconds in. So the next session is not
+// opened until the last device is gone: the node is restarted to clear it when
+// the relay owns the node, and the remainder is waited out when it does not.
+// The margin covers a node that is still unwinding a connect the relay has
+// already stopped waiting for.
+const deviceLinger = 2*time.Minute + 10*time.Second
 
 // meterInterval is how often the node is asked what the live session has
 // carried and what it has charged. It is money, not health: nothing waits on
@@ -90,6 +111,14 @@ type Options struct {
 	// SessionIdle closes a session that has carried nothing for this long. 0
 	// keeps it open until it fails or the relay stops.
 	SessionIdle time.Duration
+
+	// ResetNode replaces the node process with a fresh one and returns once the
+	// old one has exited. It is how a session's WireGuard device, which the node
+	// otherwise keeps alive for deviceLinger after the session ends, is cleared
+	// before the next session is opened. A relay that runs its own node supplies
+	// the supervisor's restart; one pointed at a node it does not own leaves it
+	// nil and waits the device out instead.
+	ResetNode func(ctx context.Context, reason string) error
 
 	// StatsFile is where a record of each session that ends is appended -
 	// bytes carried, duration, cost, which exit - so a history survives the
@@ -139,6 +168,9 @@ type Tunnel struct {
 	ipTypes []string
 	// countries is the other live half: which countries an exit may be in.
 	countries []string
+	// lingerUntil is when the WireGuard device of the last session the node was
+	// asked to build will be gone on its own. Zero when there is none.
+	lingerUntil time.Time
 }
 
 // New builds a tunnel. It does not contact the node; call Run for that.
@@ -309,6 +341,11 @@ func (t *Tunnel) idleExpired() (time.Duration, uint64, bool) {
 func (t *Tunnel) dropStaleSession(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// A session that really was left over leaves its device behind as well.
+	if cs, err := t.opt.Client.Connection(ctx, t.opt.ProxyPort); err == nil &&
+		cs.Status != "" && !strings.EqualFold(cs.Status, "NotConnected") {
+		t.noteDeviceLinger()
+	}
 	if err := t.opt.Client.Disconnect(ctx, t.opt.ProxyPort); err != nil {
 		t.log.Debug("no session left over from a previous run", "err", err)
 	}
@@ -374,6 +411,12 @@ func (t *Tunnel) ensureReady(ctx context.Context) error {
 // session picks a provider, connects, and blocks until the session degrades,
 // the rotation interval elapses, or ctx is cancelled.
 func (t *Tunnel) session(ctx context.Context) error {
+	// Before anything else, because clearing it may mean restarting the node -
+	// which the readiness check below then waits out like any other restart.
+	if err := t.clearLeftoverDevice(ctx); err != nil {
+		return err
+	}
+
 	// A node that restarted has forgotten everything: it holds the keystore
 	// locked again and answers "unlock required" to every connect. Unlocking
 	// per session is idempotent and cheap, and it is what makes the relay
@@ -400,6 +443,12 @@ func (t *Tunnel) session(ctx context.Context) error {
 
 	// A session left behind by a previous run would make Connect fail.
 	_ = t.opt.Client.Disconnect(connectCtx, t.opt.ProxyPort)
+
+	// From here the node may build a WireGuard device, and whichever way this
+	// session ends - refused, failed, dropped, rotated, idle - the device
+	// outlives it. Whether a refused connect got as far as building one is not
+	// something the node says, so every attempt counts.
+	defer t.noteDeviceLinger()
 
 	info, err := t.opt.Client.Connect(connectCtx, tequilapi.ConnectRequest{
 		ConsumerID:  t.opt.Identity,
@@ -634,6 +683,71 @@ func (t *Tunnel) meterSession(ctx context.Context) {
 		return
 	}
 	t.acct.observe(*st)
+}
+
+// noteDeviceLinger records that the node has just let go of a session whose
+// WireGuard device it will keep alive for deviceLinger.
+func (t *Tunnel) noteDeviceLinger() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lingerUntil = time.Now().Add(deviceLinger)
+}
+
+// deviceLingering reports how much longer the last session's device will live.
+func (t *Tunnel) deviceLingering() time.Duration {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.lingerUntil.IsZero() {
+		return 0
+	}
+	return time.Until(t.lingerUntil)
+}
+
+func (t *Tunnel) forgetDeviceLinger() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lingerUntil = time.Time{}
+}
+
+// clearLeftoverDevice makes sure no WireGuard device from an earlier session is
+// still alive in the node before a new one is built next to it. A node the
+// relay owns is restarted, which takes seconds; any other is waited out. A
+// restart that fails falls back to waiting, so a supervisor that cannot oblige
+// costs time rather than the session.
+func (t *Tunnel) clearLeftoverDevice(ctx context.Context) error {
+	left := t.deviceLingering()
+	if left <= 0 {
+		return nil
+	}
+	if t.opt.ResetNode != nil {
+		t.setState(tunnel.StateConnecting, "restarting the node to clear the last session's WireGuard device")
+		t.log.Info("the last session's WireGuard device is still alive in the node: restarting the node to clear it",
+			"would_linger_for", left.Truncate(time.Second))
+		resetCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := t.opt.ResetNode(resetCtx, "clear the last session's WireGuard device")
+		cancel()
+		if err == nil {
+			t.forgetDeviceLinger()
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		t.log.Warn("could not restart the node: waiting for the device to go instead", "err", err)
+		left = t.deviceLingering()
+	}
+	if left > 0 {
+		t.setState(tunnel.StateConnecting, "waiting for the node to release the last session's WireGuard device")
+		t.log.Info("the last session's WireGuard device is still alive in the node: waiting for it to go",
+			"wait", left.Truncate(time.Second))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(left):
+		}
+	}
+	t.forgetDeviceLinger()
+	return nil
 }
 
 // setAvoid records the exit the next pick should move away from.

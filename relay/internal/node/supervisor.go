@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,48 @@ type Supervisor struct {
 	// RestartMin/RestartMax bound the backoff between respawns.
 	RestartMin time.Duration
 	RestartMax time.Duration
+
+	restartOnce sync.Once
+	restarts    chan restartRequest
+}
+
+// restartRequest asks Run to replace the node. done is closed once the process
+// that was running has exited.
+type restartRequest struct {
+	reason string
+	done   chan struct{}
+}
+
+// errRestarted ends a run that Restart asked for, so Run can tell it apart from
+// a node that died on its own.
+var errRestarted = errors.New("node restarted on request")
+
+func (s *Supervisor) requests() chan restartRequest {
+	s.restartOnce.Do(func() { s.restarts = make(chan restartRequest) })
+	return s.restarts
+}
+
+// Restart replaces the running node with a fresh process, without the backoff
+// or the warning a crash earns. It returns once the old process has exited, so
+// whatever the caller asks the node next is answered by the new one rather than
+// by the one on its way out; waiting for the new one to be ready is the
+// caller's business, as it is after any other start.
+//
+// Called while the node is down between respawns, it skips the rest of the
+// backoff instead: the process about to start is already a fresh one.
+func (s *Supervisor) Restart(ctx context.Context, reason string) error {
+	req := restartRequest{reason: reason, done: make(chan struct{})}
+	select {
+	case s.requests() <- req:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-req.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Args builds the node command line. The desktop build has no entrypoint
@@ -77,6 +120,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if errors.Is(err, errRestarted) {
+			backoff = s.RestartMin
+			continue
+		}
 		// A node that ran for a while and then died is a transient failure; one
 		// that dies immediately is usually misconfiguration, so back off.
 		if time.Since(start) > time.Minute {
@@ -86,6 +133,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case req := <-s.requests():
+			close(req.done)
 		case <-time.After(backoff):
 		}
 		backoff = min(backoff*2, s.RestartMax)
@@ -131,37 +180,32 @@ func (s *Supervisor) once(ctx context.Context) error {
 	select {
 	case err := <-done:
 		return err
+	case req := <-s.requests():
+		s.Log.Info("restarting node", "pid", cmd.Process.Pid, "reason", req.reason)
+		s.stop(cmd, done)
+		close(req.done)
+		return errRestarted
 	case <-ctx.Done():
 		s.Log.Info("stopping node", "pid", cmd.Process.Pid)
-		s.stop(cmd)
-		<-done
+		s.stop(cmd, done)
 		return ctx.Err()
 	}
 }
 
-// stop asks the node to quit and kills it if it will not. Windows has no
-// meaningful signal to send, so termination is the only lever there.
-func (s *Supervisor) stop(cmd *exec.Cmd) {
-	_ = cmd.Process.Signal(os.Interrupt)
-	select {
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-	case <-processGone(cmd):
-	}
-}
-
-func processGone(cmd *exec.Cmd) <-chan struct{} {
-	ch := make(chan struct{})
-	go func() {
-		defer close(ch)
-		for range 100 {
-			if cmd.ProcessState != nil {
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
+// stop asks the node to quit, kills it if it will not, and returns once it has
+// exited - which exited, the result of the one cmd.Wait, is what says so.
+// Windows has no meaningful signal to send, so termination is the only lever
+// there, and it is pulled at once rather than after the grace period.
+func (s *Supervisor) stop(cmd *exec.Cmd, exited <-chan error) {
+	if err := cmd.Process.Signal(os.Interrupt); err == nil {
+		select {
+		case <-exited:
+			return
+		case <-time.After(10 * time.Second):
 		}
-	}()
-	return ch
+	}
+	_ = cmd.Process.Kill()
+	<-exited
 }
 
 func (s *Supervisor) openLog() (*os.File, error) {

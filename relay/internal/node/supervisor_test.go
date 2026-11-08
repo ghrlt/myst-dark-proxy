@@ -5,8 +5,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestRunOnceSurfacesClearStaleFailureAsAnOrdinaryError proves that a port
@@ -56,4 +61,89 @@ func mustAtoi(t *testing.T, s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// A restart asked for by the tunnel replaces the node at once - no backoff, no
+// "node exited" warning - and Restart does not return until the old process is
+// gone, so the caller's next question cannot be answered by the node on its
+// way out.
+func TestRestartReplacesTheNodeWithoutBackoff(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as the node")
+	}
+	dir := t.TempDir()
+	starts := filepath.Join(dir, "starts")
+	script := filepath.Join(dir, "fake-myst")
+	body := "#!/bin/sh\necho $$ >> " + starts + "\nexec sleep 60\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A free port, so clearStale has nothing to clear.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	ln.Close()
+
+	s := &Supervisor{
+		Binary:      script,
+		DataDir:     dir,
+		TequilaHost: "127.0.0.1",
+		TequilaPort: mustAtoi(t, port),
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		// A backoff long enough that a restart taking it would fail the test.
+		RestartMin: time.Minute,
+		RestartMax: time.Minute,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- s.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-runDone
+	}()
+
+	first := waitForStarts(t, starts, 1)[0]
+
+	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer rcancel()
+	if err := s.Restart(rctx, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if pidAlive(first) {
+		t.Fatalf("Restart returned while the old node (pid %d) was still running", first)
+	}
+
+	pids := waitForStarts(t, starts, 2)
+	if pids[1] == first {
+		t.Fatal("the same process was reported twice")
+	}
+}
+
+func waitForStarts(t *testing.T, path string, n int) []int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, _ := os.ReadFile(path)
+		var pids []int
+		for _, f := range strings.Fields(string(raw)) {
+			pids = append(pids, mustAtoi(t, f))
+		}
+		if len(pids) >= n {
+			return pids
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("node was not started %d times", n)
+	return nil
+}
+
+func pidAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }

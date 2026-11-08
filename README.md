@@ -38,7 +38,7 @@ See [Sessions and what they cost](#sessions-and-what-they-cost).
 
 ### Node behaviour worth knowing
 
-Four things about `--proxymode` are undocumented and were established by testing
+Five things about `--proxymode` are undocumented and were established by testing
 against node **1.39.5**. Each one breaks an implementation built on the obvious
 assumption:
 
@@ -48,6 +48,7 @@ assumption:
 | Sessions are **keyed by proxy port**; `/connection*` needs `?id=<port>` | without it the node reports on connection 0 and answers `NotConnected` forever, and `DELETE` never disconnects |
 | `/connection/ip` reports the **node's own** address, not the session's | the exit address can only be learned by fetching *through* the tunnel |
 | A node restart **re-locks the keystore** | unlocking only at startup makes a restart permanently unrecoverable |
+| Ending a session leaves its **WireGuard device alive for 2 minutes** | a session opened next to it often never comes up: the handshake stalls, or the provider answers "session is not active". The relay restarts a node it owns to clear it, and waits it out otherwise |
 
 `connect_options.proxy_port` pins the session listener exactly, which is what
 makes the fixed ports real rather than best-effort.
