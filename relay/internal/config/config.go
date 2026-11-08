@@ -175,10 +175,17 @@ type Config struct {
 	ReconnectMax     time.Duration
 	HealthInterval   time.Duration
 	RotateEvery      time.Duration // 0 disables periodic exit rotation
-	DNSMode          string        // provider | system | <ip>
-	ExitCheckURL     string        // fetched through the tunnel to learn the exit address; "" disables
-	LogLevel         string
-	LogFile          string // empty logs to stdout
+	// DNSMode is the resolver the session's netstack asks: provider | system |
+	// <ip>. An address is reached through the tunnel like any other traffic,
+	// so it leaves from the exit, not from this machine. 1.1.1.1 by default:
+	// many providers run no working resolver on their tunnel address, and with
+	// "provider" a session to one of them comes up and carries nothing - every
+	// lookup times out. Measured 2026-11-08 over the same providers, alternated:
+	// provider 1 of 12 sessions usable, 1.1.1.1 12 of 12.
+	DNSMode      string
+	ExitCheckURL string // fetched through the tunnel to learn the exit address; "" disables
+	LogLevel     string
+	LogFile      string // empty logs to stdout
 	// MaxConnections bounds how many clients each frontend serves at once. A
 	// connection beyond the limit waits in the kernel's own accept backlog
 	// instead of this process growing goroutines and sockets without bound
@@ -223,7 +230,7 @@ func Load() (*Config, error) {
 		ReconnectMax:     envDuration("RELAY_RECONNECT_MAX", 60*time.Second),
 		HealthInterval:   envDuration("RELAY_HEALTH_INTERVAL", 5*time.Second),
 		RotateEvery:      envDuration("RELAY_ROTATE_EVERY", 0),
-		DNSMode:          env("RELAY_DNS_MODE", "provider"),
+		DNSMode:          env("RELAY_DNS_MODE", "1.1.1.1"),
 		ExitCheckURL:     env("RELAY_EXIT_CHECK_URL", "https://api.ipify.org"),
 		LogLevel:         env("RELAY_LOG_LEVEL", "info"),
 		LogFile:          env("RELAY_LOG_FILE", ""),
