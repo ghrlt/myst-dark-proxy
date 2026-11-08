@@ -61,13 +61,10 @@ type Base struct {
 //
 // Each client is handled on its own goroutine, recovered: one connection
 // hitting a bug is that connection failing, not every session this relay is
-// carrying. With MaxConns set, a connection beyond the limit waits for one to
-// free up before it is even accepted, so a client under heavy load queues in
-// the kernel's own backlog rather than this process growing goroutines and
-// sockets without bound.
+// carrying. The listener is Listen's: MaxConns bounds it, and an accept error
+// is retried rather than ending the frontend - and with it the relay.
 func (b *Base) Accept(ctx context.Context, name string, handle func(context.Context, net.Conn)) error {
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", b.Listen)
+	ln, err := Listen(ctx, b.Listen, b.MaxConns, b.Log, name)
 	if err != nil {
 		return err
 	}
@@ -78,33 +75,14 @@ func (b *Base) Accept(ctx context.Context, name string, handle func(context.Cont
 		_ = ln.Close()
 	}()
 
-	var sem chan struct{}
-	if b.MaxConns > 0 {
-		sem = make(chan struct{}, b.MaxConns)
-	}
-
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
 	for {
-		if sem != nil {
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return nil
-			}
-		}
 		conn, err := ln.Accept()
 		if err != nil {
-			if sem != nil {
-				<-sem
-			}
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
-			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				continue
 			}
 			return err
 		}
@@ -112,9 +90,6 @@ func (b *Base) Accept(ctx context.Context, name string, handle func(context.Cont
 		guard.Go(b.Log, name+" connection", func() {
 			defer wg.Done()
 			defer conn.Close()
-			if sem != nil {
-				defer func() { <-sem }()
-			}
 			handle(ctx, conn)
 		})
 	}

@@ -63,8 +63,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		ErrorLog: slog.NewLogLogger(s.Log.Handler(), slog.LevelError),
 	}
 
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", s.Listen)
+	// net/http retries an accept error only when the error calls itself
+	// temporary, and on Windows WSAENOBUFS - the one heavy connection churn
+	// produces - does not, so a plain listener would let it end the frontend
+	// and the relay with it. Listen's retries every error, and also applies
+	// MaxConns, which this port otherwise had no limit on at all.
+	ln, err := frontend.Listen(ctx, s.Listen, s.MaxConns, s.Log, "http")
 	if err != nil {
 		return err
 	}

@@ -77,6 +77,31 @@ const deviceLinger = 2*time.Minute + 10*time.Second
 // the answer, so it is read rarely enough to stay out of the way.
 const meterInterval = 15 * time.Second
 
+// maxNodeDials bounds how many streams may be in the middle of being opened
+// through the node's proxy at once.
+//
+// What it guards against is the moment a session comes up under load. Every
+// client that arrived while it was being built has been waiting at the kill
+// switch, and the gate opening releases them all in the same instant: at ten
+// requests a second and a minute's wait, that is several hundred CONNECTs
+// landing on the node's listener together. Windows answers a connect beyond a
+// full accept backlog with a reset, so a burst like that comes back as
+// "connection refused" - which is exactly what a vanished listener looks like,
+// and used to be taken for one: the brand-new session was torn down, its
+// provider put on cooldown, the node restarted, and the same herd was waiting
+// for the next one. Handing the burst to the node a slice at a time keeps it
+// inside the backlog. A slot is held only for the handshake, not the stream, so
+// this bounds the rate streams are opened, never how many are carried.
+const maxNodeDials = 64
+
+// listenerProbes is how many times in a row the node's proxy listener has to
+// be unreachable before the session is declared lost. One refused probe is
+// not proof: a listener whose backlog is momentarily full refuses too.
+const listenerProbes = 3
+
+// listenerProbeGap is the pause between those probes.
+const listenerProbeGap = time.Second
+
 // Options configures the tunnel.
 type Options struct {
 	Client     *tequilapi.Client
@@ -144,6 +169,10 @@ type Tunnel struct {
 	// leave the gate open - admitting streams that are certain to fail.
 	suspect chan struct{}
 
+	// dialSlots holds one token per stream being opened through the node's
+	// proxy right now; see maxNodeDials.
+	dialSlots chan struct{}
+
 	// rotate carries "leave this exit now" from whoever asked - the tray, the
 	// CLI - to the session monitor. One slot: two requests arriving while the
 	// tunnel is being rebuilt are one rotation, not two.
@@ -187,6 +216,7 @@ func New(opt Options) *Tunnel {
 	return &Tunnel{
 		opt:          opt,
 		suspect:      make(chan struct{}, 1),
+		dialSlots:    make(chan struct{}, maxNodeDials),
 		rotate:       make(chan string, 1),
 		log:          opt.Logger.With("component", "tunnel"),
 		bc:           tunnel.NewBroadcaster(),
@@ -228,12 +258,28 @@ func (t *Tunnel) DialContext(ctx context.Context, network, addr string) (net.Con
 		ctx, cancel = context.WithTimeout(ctx, t.opt.DialTimeout)
 		defer cancel()
 	}
+	select {
+	case t.dialSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	conn, err := t.dialer().DialContext(ctx, network, addr)
+	<-t.dialSlots
 	if err != nil {
+		// A dial that ran out of time or was abandoned by its own client says
+		// nothing about the node: a client hanging up mid-dial is ordinary,
+		// and under a burst it is common. Neither does one this process could
+		// not even attempt for want of a socket. Only a listener actually
+		// refusing is worth an early health check.
+		if ctx.Err() != nil {
+			return nil, err
+		}
 		if errors.Is(err, upstream.ErrUnreachable) {
-			select {
-			case t.suspect <- struct{}{}:
-			default:
+			if refused(err) {
+				select {
+				case t.suspect <- struct{}{}:
+				default:
+				}
 			}
 			return nil, fmt.Errorf("%w: %w", tunnel.ErrTunnelDown, err)
 		}
@@ -879,21 +925,60 @@ func (t *Tunnel) discoverUpstream(ctx context.Context) (int, error) {
 		t.opt.ProxyHost, t.opt.ProxyPort, t.opt.ProxyPort+upstreamScanRange)
 }
 
+// upstreamAlive reports whether the node's proxy listener is still there.
+//
+// Only a refusal counts against it. A probe this process could not make - no
+// descriptor, no socket buffer, no ephemeral port, which is what heavy load
+// runs a machine out of - says nothing about the node, and a probe that timed
+// out found something there that is merely slow; the node's own session
+// status, asked next, is what speaks for a node that has hung. Declaring the
+// listener gone on either would tear a working session down, put a good
+// provider on cooldown and restart the node, under exactly the load that made
+// the probe fail - and the next session would meet the same load.
+//
+// And one refusal is not proof either: a listener whose backlog is full
+// refuses too, on Windows. It takes listenerProbes of them in a row. A
+// listener that is really gone stays gone, so making sure costs a couple of
+// seconds and nothing else - nothing leaks meanwhile, since a dial to a
+// missing listener fails rather than going round it.
 func (t *Tunnel) upstreamAlive(ctx context.Context) bool {
-	t.mu.RLock()
-	port := t.upstreamPort
-	t.mu.RUnlock()
-	return t.portOpen(ctx, port, 3*time.Second)
+	for i := range listenerProbes {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(listenerProbeGap):
+			}
+		}
+		t.mu.RLock()
+		port := t.upstreamPort
+		t.mu.RUnlock()
+		err := t.dialPort(ctx, port, 3*time.Second)
+		if err == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		if !refused(err) {
+			t.log.Debug("could not probe the node's proxy listener; not counting it as gone", "err", err)
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Tunnel) portOpen(ctx context.Context, port int, timeout time.Duration) bool {
+	return t.dialPort(ctx, port, timeout) == nil
+}
+
+func (t *Tunnel) dialPort(ctx context.Context, port int, timeout time.Duration) error {
 	d := net.Dialer{Timeout: timeout}
 	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(t.opt.ProxyHost, strconv.Itoa(port)))
 	if err != nil {
-		return false
+		return err
 	}
-	_ = c.Close()
-	return true
+	return c.Close()
 }
 
 // pickProposal applies the exit policy and returns the best available offer.

@@ -107,20 +107,27 @@ func (b *Broadcaster) Set(s Status) {
 		return
 	}
 	b.status = s
-	watchers := make([]chan Status, 0, len(b.watcher))
+	// Sent with the lock held. The sends never block, so holding it costs
+	// nothing - and releasing it first let a watcher's cancel close the
+	// channel in between, which makes the send panic, select or no select.
 	for _, ch := range b.watcher {
-		watchers = append(watchers, ch)
-	}
-	b.mu.Unlock()
-
-	for _, ch := range watchers {
 		// Watchers are edge-triggered and coalescing: a slow one may miss
-		// intermediate states but always converges on the latest.
+		// intermediate states but always converges on the latest. A full
+		// buffer holds an older state, so it is replaced rather than kept.
 		select {
 		case ch <- s:
 		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- s:
+			default:
+			}
 		}
 	}
+	b.mu.Unlock()
 }
 
 // Watch registers a watcher, pre-loaded with the current status.
