@@ -40,6 +40,7 @@ import (
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/gate"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/guard"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/health"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/logfile"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/node"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/selfupdate"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/stats"
@@ -184,7 +185,7 @@ func cmdRun(args []string) error {
 }
 
 func run(cfg *config.Config) error {
-	log, closeLog, err := newLogger(cfg.LogLevel, cfg.LogFile)
+	log, closeLog, err := newLogger(cfg.LogLevel, cfg.LogFile, cfg.LogKeepDays)
 	if err != nil {
 		return err
 	}
@@ -258,6 +259,7 @@ func run(cfg *config.Config) error {
 			ProxyHost:   cfg.TequilaHost,
 			ProxyPort:   cfg.ProxyPort,
 			LogPath:     filepath.Join(cfg.NodeDataDir, "logs", "node.log"),
+			LogKeepDays: cfg.LogKeepDays,
 			Log:         log,
 		}
 		resetNode = sup.Restart
@@ -557,9 +559,16 @@ func killSwitchMode(strict bool) string {
 	return "permissive (established streams may drain)"
 }
 
+// relayLogPartSize is how large one file of the relay's log grows before the
+// day continues in the next part. A normal day is a few megabytes; this is
+// for the day that is not.
+const relayLogPartSize = 64 << 20
+
 // newLogger writes to stdout, or to a file when one is configured - which is
 // what an autostarted background process needs, having no console to write to.
-func newLogger(level, file string) (*slog.Logger, func(), error) {
+// The file is one per day (relay-2026-11-09.log beside the configured
+// relay.log), and keepDays of them are kept.
+func newLogger(level, file string, keepDays int) (*slog.Logger, func(), error) {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(level)); err != nil {
 		lvl = slog.LevelInfo
@@ -567,18 +576,12 @@ func newLogger(level, file string) (*slog.Logger, func(), error) {
 	out := io.Writer(os.Stdout)
 	closer := func() {}
 	if file != "" {
-		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		w, err := logfile.Open(file, keepDays, relayLogPartSize)
+		if err != nil {
 			return nil, nil, err
 		}
-		if st, err := os.Stat(file); err == nil && st.Size() > 16<<20 {
-			_ = os.Remove(file)
-		}
-		f, err := os.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return nil, nil, fmt.Errorf("open log file %s: %w", file, err)
-		}
-		out = f
-		closer = func() { _ = f.Close() }
+		out = w
+		closer = func() { _ = w.Close() }
 	}
 	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl})), closer, nil
 }

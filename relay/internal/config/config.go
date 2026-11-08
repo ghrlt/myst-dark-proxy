@@ -185,7 +185,10 @@ type Config struct {
 	DNSMode      string
 	ExitCheckURL string // fetched through the tunnel to learn the exit address; "" disables
 	LogLevel     string
-	LogFile      string // empty logs to stdout
+	LogFile      string // empty logs to stdout; otherwise the base name of one file per day
+	// LogKeepDays is how many days of log files are kept, the relay's and the
+	// node's alike, today included. 0 keeps them all.
+	LogKeepDays int
 	// MaxConnections bounds how many clients each frontend serves at once. A
 	// connection beyond the limit waits in the kernel's own accept backlog
 	// instead of this process growing goroutines and sockets without bound
@@ -234,6 +237,7 @@ func Load() (*Config, error) {
 		ExitCheckURL:     env("RELAY_EXIT_CHECK_URL", "https://api.ipify.org"),
 		LogLevel:         env("RELAY_LOG_LEVEL", "info"),
 		LogFile:          env("RELAY_LOG_FILE", ""),
+		LogKeepDays:      envInt("RELAY_LOG_KEEP_DAYS", 14),
 		StatsFile:        env("RELAY_STATS_FILE", filepath.Join(AppDir(), "logs", "sessions.jsonl")),
 		MaxConnections:   envInt("RELAY_MAX_CONNECTIONS", 1000),
 
@@ -365,6 +369,9 @@ func (c *Config) validate() error {
 	// one client guaranteed to be refused.
 	if (c.OnDemand || c.SessionIdle > 0) && c.ReadyTimeout <= 0 {
 		return fmt.Errorf("RELAY_ACTIVATION_TIMEOUT must be positive while sessions are opened on demand")
+	}
+	if c.LogKeepDays < 0 {
+		return fmt.Errorf("RELAY_LOG_KEEP_DAYS=%d must not be negative; 0 keeps every day", c.LogKeepDays)
 	}
 	if c.MaxConnections < 0 {
 		return fmt.Errorf("RELAY_MAX_CONNECTIONS=%d must not be negative; 0 disables the limit", c.MaxConnections)

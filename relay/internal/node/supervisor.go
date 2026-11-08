@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/logfile"
 )
 
 // Supervisor runs a Mysterium node as a child process and keeps it alive.
@@ -23,7 +25,10 @@ type Supervisor struct {
 	TequilaPort int
 	ProxyHost   string
 	ProxyPort   int
+	// LogPath is the base name of the node's log, written one file per day
+	// beside it (node-2026-11-09.log); LogKeepDays of them are kept, 0 all.
 	LogPath     string
+	LogKeepDays int
 	ExtraArgs   []string
 	Log         *slog.Logger
 
@@ -33,7 +38,16 @@ type Supervisor struct {
 
 	restartOnce sync.Once
 	restarts    chan restartRequest
+
+	logOnce sync.Once
+	logW    *logfile.Writer
+	logErr  error
 }
+
+// nodeLogPartSize is how large one file of the node's log grows before the day
+// continues in the next part. The node logs at debug, every WireGuard
+// handshake and keepalive, so a busy day is large.
+const nodeLogPartSize = 128 << 20
 
 // restartRequest asks Run to replace the node. done is closed once the process
 // that was running has exited.
@@ -156,21 +170,26 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 }
 
 func (s *Supervisor) once(ctx context.Context) error {
-	logFile, err := s.openLog()
+	logW, err := s.openLog()
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
 
 	cmd := exec.Command(s.Binary, s.Args()...)
 	cmd.Dir = s.DataDir
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	// Not a file: the node's output is copied through the day-by-day writer,
+	// which is what lets it move to the next day's file while the node keeps
+	// running. The copy ends when the node closes its end, and WaitDelay
+	// bounds that, so an orphan holding the pipe cannot keep Wait from
+	// returning after the node itself has gone.
+	cmd.Stdout = logW
+	cmd.Stderr = logW
+	cmd.WaitDelay = 5 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start node %s: %w", s.Binary, err)
 	}
-	s.Log.Info("node started", "pid", cmd.Process.Pid, "log", s.LogPath)
+	s.Log.Info("node started", "pid", cmd.Process.Pid, "log", logW.Path())
 	s.writePID(cmd.Process.Pid)
 	defer s.removePID()
 
@@ -208,19 +227,16 @@ func (s *Supervisor) stop(cmd *exec.Cmd, exited <-chan error) {
 	<-exited
 }
 
-func (s *Supervisor) openLog() (*os.File, error) {
-	if s.LogPath == "" {
-		s.LogPath = filepath.Join(s.DataDir, "logs", "node.log")
-	}
-	if err := os.MkdirAll(filepath.Dir(s.LogPath), 0o755); err != nil {
-		return nil, err
-	}
-	// The node logs at debug and grows fast; start fresh once it passes 32MB
-	// rather than filling the disk on a machine that is always on.
-	if st, err := os.Stat(s.LogPath); err == nil && st.Size() > 32<<20 {
-		_ = os.Remove(s.LogPath)
-	}
-	return os.OpenFile(s.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+// openLog opens the node's log once for the supervisor's lifetime: every node
+// it starts writes to the same day-by-day writer.
+func (s *Supervisor) openLog() (*logfile.Writer, error) {
+	s.logOnce.Do(func() {
+		if s.LogPath == "" {
+			s.LogPath = filepath.Join(s.DataDir, "logs", "node.log")
+		}
+		s.logW, s.logErr = logfile.Open(s.LogPath, s.LogKeepDays, nodeLogPartSize)
+	})
+	return s.logW, s.logErr
 }
 
 func (s *Supervisor) pidPath() string { return filepath.Join(s.DataDir, "node.pid") }

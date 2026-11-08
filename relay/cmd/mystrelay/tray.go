@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/config"
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/logfile"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/stats"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/systray"
 	"github.com/ghrlt/myst-dark-proxy/relay/internal/tunnel"
@@ -516,9 +517,9 @@ func (a *trayApp) showBalance() {
 
 // doViewLogs opens the folder the relay's own logs live in, in whatever the
 // desktop associates with a folder - Explorer, a file manager - rather than
-// showing them in a dialog: relay.log can run to megabytes, and crash.log,
-// node.log and relay.log are easier to tell apart side by side than pasted one
-// after another.
+// showing them in a dialog: a day of the relay's log can run to megabytes, and
+// crash.log and a folder of one file per day are easier to pick through side
+// by side than pasted one after another.
 func (a *trayApp) doViewLogs() {
 	dir := logsDir(a.cfg, a.cfgPath)
 	if err := openPath(dir); err != nil {
@@ -526,8 +527,8 @@ func (a *trayApp) doViewLogs() {
 	}
 }
 
-// logsDir is where the relay's own logs live: the directory relay.log is in
-// when RELAY_LOG_FILE names one, and otherwise wherever a crash this build
+// logsDir is where the relay's own logs live: the directory its daily files
+// are in when RELAY_LOG_FILE names one, and otherwise wherever a crash this build
 // could not log any other way still lands - the two normally coincide.
 func logsDir(cfg *config.Config, cfgPath string) string {
 	if cfg.LogFile != "" {
@@ -916,7 +917,7 @@ func (a *trayApp) spawn() error {
 	go a.supervise(cmd)
 	if !a.waitForRelay(60 * time.Second) {
 		return fmt.Errorf("the relay was started but is not answering on %s; see the log in %s",
-			a.cfg.HealthListen, a.cfg.LogFile)
+			a.cfg.HealthListen, logfile.Latest(a.cfg.LogFile))
 	}
 	return nil
 }

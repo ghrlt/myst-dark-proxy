@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/ghrlt/myst-dark-proxy/relay/internal/logfile"
 )
 
 // serviceInfo is what the platform's service manager knows about the relay's
@@ -39,7 +41,7 @@ func cmdStartService(args []string) error {
 	}
 	svc := lookupService()
 	if cfg.LogFile != "" {
-		svc.Logs = logsHint(cfg.LogFile)
+		svc.Logs = logsHint(logfile.Latest(cfg.LogFile))
 	}
 	return startService(svc, newRelayClient(cfg), *wait, os.Stdout)
 }
